@@ -141,7 +141,7 @@ def methodology_expander() -> None:
         with col_a:
             st.markdown(
                 """
-**The problem.** A merchant holding physical metal, lumber or cocoa sells futures against it. In a
+**The problem.** A merchant holding physical metals, lumber and softs (cocoa, coffee, sugar) sells futures against them. In a
 rally the inventory gains value on paper, but the short futures lose money in cash, every day, through
 variation margin. Exchanges also raise initial margin when volatility jumps. The inventory gain only
 turns into cash when the goods are sold, or as extra availability under the asset-based loan. That
@@ -173,9 +173,15 @@ the base falls below the drawn balance.
 **Scenario heatmap.** Metals and softs shocked independently on a 17 x 17 grid.
 
 **Monte Carlo LaR.** Correlated price paths over 1 to 20 trading days from the recent return
-covariance. LaR 95% and 99% are the 5th and 1st percentile of the simulated net liquidity buffer.
+covariance. LaR 95% and 99% are the 5th and 1st percentile of the simulated net liquidity buffer. The
+liquidity runway follows daily paths for 20 trading days and records when each one first runs short.
 
-**Historical replay.** Today's book run through each trading day of the loaded price history.
+**Hedging.** Sweeps the hedge ratio from 0% to 100% and shows the trade-off between margin calls in a
+rally and unprotected inventory value in a fall.
+
+**Replays.** Today's book run through the loaded price history, or through observed futures prices
+from real episodes: the Covid-19 crash, the 2021 Brazil frost, the 2022 Russia-Ukraine shock and the
+2024 cocoa squeeze.
 
 *Assumptions:* quantities, receivables and the drawn balance are held fixed; haircuts use the current
 30-day realized volatility; margin is settled in cash on the shock day.

@@ -58,8 +58,11 @@ COMMODITY_COLORS: dict[str, str] = {
     "HG=F": "#AA5C35",
     "LBR=F": "#386A52",
     "CC=F": "#6D4A3C",
+    "KC=F": "#3E2C23",
+    "SB=F": "#7C8DA6",
 }
-COMMODITY_DASH: dict[str, str] = {"GC=F": "solid", "HG=F": "dash", "LBR=F": "dot", "CC=F": "dashdot"}
+COMMODITY_DASH: dict[str, str] = {"GC=F": "solid", "HG=F": "dash", "LBR=F": "dot", "CC=F": "dashdot",
+                                  "KC=F": "longdash", "SB=F": "longdashdot"}
 PORTFOLIO_COLOR = "#0F172A"
 
 FONT_SANS = "IBM Plex Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif"

@@ -19,7 +19,7 @@ from core.stress_engine import run_stress_scenario
 
 def test_vectorized_engine_matches_exact_engine(positions, receivables, snapshot, terms):
     rng = np.random.default_rng(11)
-    shocks = rng.uniform(-0.35, 0.35, size=(150, 4))
+    shocks = rng.uniform(-0.35, 0.35, size=(150, len(REQUIRED_TICKERS)))
     shocks[0] = 0.14
     shocks[1] = -0.20
     shocks[2] = 0.0
@@ -35,7 +35,7 @@ def test_vectorized_engine_matches_exact_engine(positions, receivables, snapshot
 
 def test_vectorized_engine_alternate_cap_tier(positions, receivables, snapshot):
     terms = FacilityTerms.model_validate({"concentration_cap_pct": 0.175, "drawn_revolver": 112e6})
-    shocks = np.linspace(-0.2, 0.2, 9)[:, None] * np.ones((1, 4))
+    shocks = np.linspace(-0.2, 0.2, 9)[:, None] * np.ones((1, len(REQUIRED_TICKERS)))
     out = evaluate_shock_matrix(positions, receivables, snapshot, terms, shocks)
     for i, s in enumerate(shocks[:, 0]):
         exact = run_stress_scenario(positions, receivables, snapshot, terms, shock_pct=float(s))

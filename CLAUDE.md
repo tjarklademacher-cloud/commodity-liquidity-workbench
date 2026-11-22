@@ -22,7 +22,9 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 | `core/haircuts.py` | Inventory haircut engine + 100%-sum effective decomposition |
 | `core/borrowing_base.py` | AR eligibility, cap solver (active-set + sorted-suffix closed form), waterfall |
 | `core/stress_engine.py` | Stress scenario/sweep, regime classifier, breakevens, certificate CSV/JSON |
-| `core/scenario_analytics.py` | Vectorized engine, metals×softs shock grid, Monte Carlo LaR, historical replay |
+| `core/scenario_analytics.py` | Vectorized engine, metals×softs shock grid, Monte Carlo LaR, liquidity runway, replay |
+| `core/hedge_optimizer.py` | Hedge-ratio frontier against the 41-point sweep |
+| `core/crisis_replay.py` | Real crisis episodes from Yahoo Finance applied to today's book |
 | `ui/theme.py` | Design system: light institutional tokens (mirrored in `.streamlit/config.toml`), semantic STATUS colours, commodity palette, Plotly layout, minimal CSS for custom HTML and `panel_*` containers |
 | `ui/charts.py` | The original six Plotly figures plus gauge, donut, regime ribbon, heatmap, MC, correlation, replay |
 | `ui/cache.py` | `st.cache_data` wrappers (live TTL 900s, scenario suite, Monte Carlo) and data-status label |
@@ -36,12 +38,13 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 - All widgets, figures, CSS and session state live in `ui/` and `app.py`.
 - `core/__init__.py` exports lazily (PEP 562) so `python -m core.data_feed` has no runpy double-import warning.
 
-## Ground truth (seed=42 sample, defaults); tests assert these to $0.01M
+## Ground truth (seed=42 sample); tests assert these to $0.01M
 
-- Final BB $114.12M (15% cap, Barry + Cargill capped, $5.29M cutback, 2 iterations)
-- 17.5% tier $118.98M (1 capped) · 20% tier $119.41M (0 capped)
-- +14% shock: NLB −$1.22M `CRITICAL_SQUEEZE` · −20%: cure $13.65M `BB_DEFICIENCY_WARNING`
-- Breakevens +12.41% / −5.45% · sweep counts BB_DEF 15 / HEALTHY 7 / TRAP 11 / CRITICAL 8
+- Default six-commodity book (`tests/test_default_book.py`): BB $144.94M (Barry capped, $2.06M cutback),
+  +14% NLB -$1.79M critical, -20% cure $6.83M, breakevens +12.09% / -12.72%, sweep 13/12/8/8.
+- Legacy four-commodity book pinned in `tests/conftest.py` (`positions`, `receivables`, `terms`, `sweep`):
+  BB $114.12M, +14% NLB -$1.22M, breakevens +12.41% / -5.45%, sweep 15/7/11/8. Do not change these.
+- Coffee (KC=F) and sugar (SB=F) are quoted in cents; `CommoditySpec.quote_scale=0.01` converts on load.
 
 ## 2026 library guardrails
 

@@ -27,6 +27,7 @@ from core.schemas import (
     MarketQuote,
     MonteCarloResult,
     ReceivableItem,
+    RunwayResult,
     ShockGridResult,
 )
 
@@ -158,6 +159,26 @@ def _winsorized_log_returns(prices_df: pd.DataFrame, lookback: int, winsorize_si
             if pd.notna(sd) and sd > 0:
                 rets.loc[:, t] = rets[t].clip(lower=-winsorize_sigma * sd, upper=winsorize_sigma * sd)
     return rets
+
+
+def _daily_covariance(
+    prices_df: pd.DataFrame, lookback_days: int, winsorize_sigma: float | None, specs: Mapping[str, CommoditySpec]
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Daily log-return covariance and correlation (reference vols and zero correlation if history is short)."""
+    rets = _winsorized_log_returns(prices_df.loc[:, list(REQUIRED_TICKERS)], lookback_days, winsorize_sigma)
+    if len(rets) < 20:
+        vols = np.array([specs[t].ref_vol / np.sqrt(252.0) for t in REQUIRED_TICKERS])
+        return np.diag(vols**2), np.eye(len(REQUIRED_TICKERS)), int(len(rets))
+    return rets.cov(ddof=1).to_numpy(), rets.corr().to_numpy(), int(len(rets))
+
+
+def _cholesky(cov: np.ndarray) -> np.ndarray:
+    jitter = 0.0
+    while True:
+        try:
+            return np.linalg.cholesky(cov + jitter * np.eye(cov.shape[0]))
+        except np.linalg.LinAlgError:
+            jitter = max(jitter * 10.0, 1e-12)
 
 
 def run_liquidity_monte_carlo(
@@ -295,4 +316,53 @@ def run_historical_replay(
         deficiency_days=int((frame["bb_deficiency_cure"] > 0.0).sum()),
         min_stressed_buffer=float(frame["stressed_buffer"].min()),
         min_stressed_buffer_date=frame["stressed_buffer"].idxmin().strftime(fmt),
+    )
+
+
+def run_liquidity_runway(
+    positions: Sequence[InventoryPosition],
+    receivables: Sequence[ReceivableItem],
+    market_snapshot: Mapping[str, MarketQuote],
+    terms: FacilityTerms,
+    prices_df: pd.DataFrame,
+    horizon_days: int = 20,
+    n_paths: int = 2000,
+    seed: int = 11,
+    lookback_days: int = 250,
+    winsorize_sigma: float | None = 5.0,
+    specs: Mapping[str, CommoditySpec] = COMMODITY_SPECS,
+) -> RunwayResult:
+    """Simulate daily correlated price paths and evaluate the net liquidity buffer at each day's cumulative move.
+
+    Each day is evaluated with the same engine as the stress sweep, using the cumulative price move since today.
+    A path's runway ends on the first day its buffer is below zero (a critical squeeze).
+    """
+    cov, _, _ = _daily_covariance(prices_df, lookback_days, winsorize_sigma, specs)
+    chol = _cholesky(cov)
+    rng = np.random.default_rng(seed)
+    z = rng.standard_normal((n_paths, horizon_days, cov.shape[0]))
+    cum_log = np.cumsum(z @ chol.T, axis=1)
+    shocks = np.expm1(cum_log)
+    nlb = np.empty((n_paths, horizon_days))
+    for d in range(horizon_days):
+        nlb[:, d] = evaluate_shock_matrix(positions, receivables, market_snapshot, terms, shocks[:, d, :],
+                                          specs)["net_liquidity_buffer"]
+    breached = nlb < 0.0
+    ever = breached.any(axis=1)
+    first_day = np.where(ever, breached.argmax(axis=1) + 1, 0)
+    counts = [int((first_day == d).sum()) for d in range(1, horizon_days + 1)]
+    by_day = np.cumsum(counts) / n_paths
+    pct = {f"p{q}": np.percentile(nlb, q, axis=0).tolist() for q in (5, 25, 50, 75, 95)}
+    breach_days = first_day[ever]
+    return RunwayResult(
+        horizon_days=int(horizon_days),
+        n_paths=int(n_paths),
+        seed=int(seed),
+        days=list(range(1, horizon_days + 1)),
+        percentiles=pct,
+        prob_breached_by_day=by_day.tolist(),
+        first_breach_counts=counts,
+        prob_breach_within_horizon=float(ever.mean()),
+        median_first_breach_day=float(np.median(breach_days)) if breach_days.size else None,
+        p10_first_breach_day=float(np.percentile(first_day, 10)) if ever.mean() >= 0.10 else None,
     )

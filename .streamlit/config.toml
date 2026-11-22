@@ -17,7 +17,7 @@ font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wgh
 codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap, monospace"
 headingFontWeights = 600
 headingFontSizes = ["1.375rem", "1.125rem", "1rem", "0.9375rem", "0.875rem", "0.8125rem"]
-chartCategoricalColors = ["#9B8018", "#AA5C35", "#386A52", "#6D4A3C", "#1B4965", "#64748B"]
+chartCategoricalColors = ["#9B8018", "#AA5C35", "#386A52", "#6D4A3C", "#3E2C23", "#7C8DA6", "#1B4965"]
 
 [theme.sidebar]
 backgroundColor = "#F0F2F5"

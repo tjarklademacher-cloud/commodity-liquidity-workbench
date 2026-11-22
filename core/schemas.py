@@ -8,7 +8,7 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-REQUIRED_TICKERS: tuple[str, ...] = ("GC=F", "HG=F", "LBR=F", "CC=F")
+REQUIRED_TICKERS: tuple[str, ...] = ("GC=F", "HG=F", "LBR=F", "CC=F", "KC=F", "SB=F")
 CAP_TIER_OPTIONS: tuple[float, ...] = (0.15, 0.175, 0.20)
 
 
@@ -27,6 +27,7 @@ class CommoditySpec(BaseModel):
     exchange: str
     unit: str
     contract_multiplier: float = Field(gt=0.0)
+    quote_scale: float = Field(gt=0.0, default=1.0)
     base_haircut: float = Field(ge=0.0, le=1.0)
     ref_vol: float = Field(ge=0.0)
     vol_slope: float = Field(ge=0.0)
@@ -90,10 +91,10 @@ class ReceivableItem(BaseModel):
 
 
 class FacilityTerms(BaseModel):
-    facility_limit: float = Field(gt=0.0, default=115_000_000.0)
-    drawn_revolver: float = Field(ge=0.0, default=109_000_000.0)
-    unrestricted_cash: float = Field(ge=0.0, default=4_500_000.0)
-    baseline_initial_margin: float = Field(ge=0.0, default=4_800_000.0)
+    facility_limit: float = Field(gt=0.0, default=140_000_000.0)
+    drawn_revolver: float = Field(ge=0.0, default=133_000_000.0)
+    unrestricted_cash: float = Field(ge=0.0, default=5_500_000.0)
+    baseline_initial_margin: float = Field(ge=0.0, default=6_000_000.0)
     concentration_cap_pct: float = Field(gt=0.0, le=1.0, default=0.15)
     im_stepup_trigger: float = Field(ge=0.0, le=1.0, default=0.10)
     im_stepup_fraction: float = Field(ge=0.0, le=2.0, default=0.20)
@@ -276,6 +277,16 @@ COMMODITY_SPECS: dict[str, CommoditySpec] = {
         contract_multiplier=10.0, base_haircut=0.28, ref_vol=0.30, vol_slope=0.45,
         unhedged_penalty_rate=0.18, min_haircut=0.10, max_haircut=0.65,
     ),
+    "KC=F": CommoditySpec(
+        ticker="KC=F", name="Coffee", exchange="ICE", unit="lbs",
+        contract_multiplier=37500.0, quote_scale=0.01, base_haircut=0.26, ref_vol=0.30, vol_slope=0.45,
+        unhedged_penalty_rate=0.18, min_haircut=0.10, max_haircut=0.65,
+    ),
+    "SB=F": CommoditySpec(
+        ticker="SB=F", name="Sugar", exchange="ICE", unit="lbs",
+        contract_multiplier=112000.0, quote_scale=0.01, base_haircut=0.22, ref_vol=0.25, vol_slope=0.45,
+        unhedged_penalty_rate=0.18, min_haircut=0.10, max_haircut=0.65,
+    ),
 }
 
 DEFAULT_INVENTORY_POSITIONS: tuple[InventoryPosition, ...] = (
@@ -283,11 +294,13 @@ DEFAULT_INVENTORY_POSITIONS: tuple[InventoryPosition, ...] = (
     InventoryPosition(ticker="HG=F", physical_qty=5_500_000.0, hedged_qty=4_675_000.0),
     InventoryPosition(ticker="LBR=F", physical_qty=32_000.0, hedged_qty=19_200.0),
     InventoryPosition(ticker="CC=F", physical_qty=2_900.0, hedged_qty=2_610.0),
+    InventoryPosition(ticker="KC=F", physical_qty=4_500_000.0, hedged_qty=3_825_000.0),
+    InventoryPosition(ticker="SB=F", physical_qty=44_800_000.0, hedged_qty=35_840_000.0),
 )
 
 DEFAULT_RECEIVABLES: tuple[ReceivableItem, ...] = (
     ReceivableItem(buyer_name="Barry Callebaut AG", commodity="Cocoa",
-                   gross_amount=25_000_000.0, days_past_due=18, is_investment_grade=True),
+                   gross_amount=28_000_000.0, days_past_due=18, is_investment_grade=True),
     ReceivableItem(buyer_name="Cargill Cocoa & Chocolate", commodity="Cocoa",
                    gross_amount=21_500_000.0, days_past_due=24, is_investment_grade=True),
     ReceivableItem(buyer_name="Olam Food Ingredients", commodity="Cocoa",
@@ -296,23 +309,30 @@ DEFAULT_RECEIVABLES: tuple[ReceivableItem, ...] = (
                    gross_amount=5_200_000.0, days_past_due=41, is_investment_grade=False),
     ReceivableItem(buyer_name="Midwest Copper Fabricators", commodity="Copper",
                    gross_amount=4_100_000.0, days_past_due=14, is_investment_grade=False),
-    ReceivableItem(buyer_name="Artisanal Roasters Co.", commodity="Cocoa",
+    ReceivableItem(buyer_name="Hanseatic Coffee Roasters", commodity="Coffee",
+                   gross_amount=9_500_000.0, days_past_due=21, is_investment_grade=True),
+    ReceivableItem(buyer_name="Coastal Confectionery Group", commodity="Sugar",
+                   gross_amount=3_800_000.0, days_past_due=37, is_investment_grade=False),
+    ReceivableItem(buyer_name="Artisanal Roasters Co.", commodity="Coffee",
                    gross_amount=2_400_000.0, days_past_due=104, is_investment_grade=False),
 )
 
 DEFAULT_FACILITY_TERMS = FacilityTerms()
 
 STRESS_SCENARIO_PRESETS: dict[str, dict[str, float]] = {
-    "Parallel +14% Margin Squeeze (Default)": {"GC=F": 0.14, "HG=F": 0.14, "LBR=F": 0.14, "CC=F": 0.14},
-    "Baseline (0% Shock)": {"GC=F": 0.0, "HG=F": 0.0, "LBR=F": 0.0, "CC=F": 0.0},
-    "West Africa Cocoa Spike (+30% CC, +5% Others)": {"GC=F": 0.05, "HG=F": 0.05, "LBR=F": 0.05, "CC=F": 0.30},
-    "Broad Deflation Crash (-20% All)": {"GC=F": -0.20, "HG=F": -0.20, "LBR=F": -0.20, "CC=F": -0.20},
-    "Metals Rally / Lumber Slump (+20% GC/HG, -10% LBR)": {"GC=F": 0.20, "HG=F": 0.20, "LBR=F": -0.10, "CC=F": 0.0},
+    "Parallel +14% Margin Squeeze (Default)": {t: 0.14 for t in REQUIRED_TICKERS},
+    "Baseline (0% Shock)": {t: 0.0 for t in REQUIRED_TICKERS},
+    "West Africa Cocoa Spike (+30% CC, +5% Others)": {**{t: 0.05 for t in REQUIRED_TICKERS}, "CC=F": 0.30},
+    "Brazil Coffee Frost (+30% KC, +10% SB, 0% Others)": {**{t: 0.0 for t in REQUIRED_TICKERS}, "KC=F": 0.30,
+                                                          "SB=F": 0.10},
+    "Broad Deflation Crash (-20% All)": {t: -0.20 for t in REQUIRED_TICKERS},
+    "Metals Rally / Lumber Slump (+20% GC/HG, -10% LBR)": {**{t: 0.0 for t in REQUIRED_TICKERS}, "GC=F": 0.20,
+                                                           "HG=F": 0.20, "LBR=F": -0.10},
 }
 
 
 METALS_TICKERS: tuple[str, ...] = ("GC=F", "HG=F")
-SOFTS_TICKERS: tuple[str, ...] = ("LBR=F", "CC=F")
+SOFTS_TICKERS: tuple[str, ...] = ("LBR=F", "CC=F", "KC=F", "SB=F")
 
 
 class ShockGridResult(BaseModel):
@@ -364,3 +384,62 @@ class HistoricalReplayResult(BaseModel):
     deficiency_days: int
     min_stressed_buffer: float
     min_stressed_buffer_date: str
+
+
+class HedgeFrontierResult(BaseModel):
+    """Hedge ratio sweep for one commodity (or all at once) against the 41-point parallel stress sweep."""
+
+    scope: str
+    ratios: list[float]
+    min_buffer: list[float]
+    positive_share: list[float]
+    buffer_up_20: list[float]
+    buffer_down_20: list[float]
+    crash_value_loss: list[float]
+    baseline_bb: list[float]
+    current_ratio: float
+    recommended_ratio: float
+    recommended_index: int
+
+
+class RunwayResult(BaseModel):
+    """Day-by-day simulated liquidity paths and time to first liquidity shortfall."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    horizon_days: int
+    n_paths: int
+    seed: int
+    days: list[int]
+    percentiles: dict[str, list[float]]
+    prob_breached_by_day: list[float]
+    first_breach_counts: list[int]
+    prob_breach_within_horizon: float
+    median_first_breach_day: float | None
+    p10_first_breach_day: float | None
+
+
+class CrisisEpisode(BaseModel):
+    key: str
+    name: str
+    start: str
+    end: str
+    note: str
+
+
+class CrisisReplayResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    episode: CrisisEpisode
+    frame: pd.DataFrame
+    covered_tickers: list[str]
+    missing_tickers: list[str]
+    first_date: str
+    last_date: str
+    worst_net_buffer: float
+    worst_date: str
+    worst_regime: str
+    critical_days: int
+    peak_vm_outflow: float
+    peak_vm_date: str
+    max_moves: dict[str, float]

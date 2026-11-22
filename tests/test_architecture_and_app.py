@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -157,16 +158,16 @@ def test_app_initial_load_clean(app):
     assert len(app.warning) == 0
     assert any(e.label == "Methodology and use case" for e in app.expander)
     assert [t.label for t in app.tabs] == ["Overview", "Borrowing base", "Inventory", "Receivables", "Stress sweep",
-                                           "Scenario heatmap", "Monte Carlo LaR", "Historical replay"]
+                                           "Scenario heatmap", "Monte Carlo LaR", "Hedging", "Replays"]
     assert "Bundled sample data" in " ".join(m.value for m in app.markdown)
-    assert len(app.tabs) == 8
+    assert len(app.tabs) == 9
     assert 'class="verdict"' in " ".join(m.value for m in app.markdown)
 
 
 def test_app_default_is_critical_squeeze(app):
     assert app.session_state["active_regime"] == LiquidityRegime.CRITICAL_SQUEEZE
     assert "Critical squeeze" in _banner_text(app)
-    assert "-$1.22M" in _banner_text(app)
+    assert "-$1.79M" in _banner_text(app)
 
 
 def test_app_zero_shock_is_healthy(app):
@@ -224,3 +225,50 @@ def test_app_per_commodity_override_runs(app):
     app.slider(key="shock_CC=F").set_value(30).run()
     assert len(app.exception) == 0
     assert len(app.error) == 0
+
+
+def test_app_hedging_scope_change(app):
+    app.selectbox(key="hedge_scope").set_value("KC=F").run()
+    assert len(app.exception) == 0
+    assert "Liquidity-optimal ratio" in " ".join(m.value for m in app.markdown)
+
+
+def test_app_crisis_replay_offline_is_graceful(app, monkeypatch):
+    import ui.cache
+
+    def offline(*args, **kwargs):
+        raise ConnectionError("simulated offline")
+
+    monkeypatch.setattr(ui.cache, "fetch_episode_closes", offline)
+    ui.cache.cached_episode_closes.clear()
+    ui.cache.cached_crisis_replay.clear()
+    app.selectbox(key="replay_source").set_value("cocoa_2024").run()
+    assert len(app.exception) == 0
+    assert any("could not be loaded" in i.value for i in app.info)
+    ui.cache.cached_episode_closes.clear()
+    ui.cache.cached_crisis_replay.clear()
+
+
+def test_new_charts_serialize(market, default_positions, default_receivables, default_terms):
+    from core.crisis_replay import CRISIS_EPISODES, run_crisis_replay
+    from core.hedge_optimizer import run_hedge_frontier
+    from core.scenario_analytics import run_liquidity_runway
+    from ui.charts import (
+        build_crisis_replay_chart,
+        build_hedge_frontier_chart,
+        build_runway_breach_chart,
+        build_runway_fan_chart,
+    )
+
+    hedge = run_hedge_frontier(default_positions, default_receivables, market.snapshot, default_terms)
+    runway = run_liquidity_runway(default_positions, default_receivables, market.snapshot, default_terms,
+                                  market.prices_df, n_paths=300)
+    ep = CRISIS_EPISODES["cocoa_2024"]
+    closes = market.prices_df.copy()
+    closes.index = pd.bdate_range(end=ep.end, periods=len(closes))
+    crisis = run_crisis_replay(default_positions, default_receivables, market.snapshot, default_terms, closes, ep)
+    for fig in (build_hedge_frontier_chart(hedge), build_runway_fan_chart(runway), build_runway_breach_chart(runway),
+                build_crisis_replay_chart(crisis, COMMODITY_SPECS, default_terms)):
+        payload = json.loads(fig.to_json())
+        assert payload["data"]
+        assert not fig.layout.title.text

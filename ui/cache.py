@@ -14,21 +14,32 @@ import pandas as pd
 import streamlit as st
 
 from core.data_feed import load_custom_csv_market_data, load_live_market_data, load_sample_market_data
-from core.scenario_analytics import run_historical_replay, run_liquidity_monte_carlo, run_shock_grid
+from core.crisis_replay import CRISIS_EPISODES, fetch_episode_closes, run_crisis_replay
+from core.hedge_optimizer import run_hedge_frontier
+from core.scenario_analytics import (
+    run_historical_replay,
+    run_liquidity_monte_carlo,
+    run_liquidity_runway,
+    run_shock_grid,
+)
 from core.schemas import (
+    CrisisReplayResult,
     FacilityTerms,
+    HedgeFrontierResult,
     HistoricalReplayResult,
     InventoryPosition,
     MarketLoadResult,
     MarketQuote,
     MonteCarloResult,
     ReceivableItem,
+    RunwayResult,
     ShockGridResult,
     StressSweepResult,
 )
 from core.stress_engine import run_stress_sweep
 
 LIVE_TTL_SECONDS = 900
+HISTORY_TTL_SECONDS = 86_400
 
 
 def _winsor(winsorize: bool) -> float | None:
@@ -112,6 +123,46 @@ def cached_monte_carlo(
         positions, receivables, snapshot, terms, prices_df,
         horizon_days=horizon_days, n_sims=n_sims, winsorize_sigma=_winsor(winsorize),
     )
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def cached_hedge_frontier(
+    positions_json: str, receivables_json: str, terms_json: str, snapshot_json: str, scope: str
+) -> HedgeFrontierResult:
+    positions, receivables, terms, snapshot = _load_inputs(positions_json, receivables_json, terms_json, snapshot_json)
+    return run_hedge_frontier(positions, receivables, snapshot, terms, scope)
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def cached_runway(
+    positions_json: str,
+    receivables_json: str,
+    terms_json: str,
+    snapshot_json: str,
+    prices_df: pd.DataFrame,
+    n_paths: int,
+    winsorize: bool,
+) -> RunwayResult:
+    positions, receivables, terms, snapshot = _load_inputs(positions_json, receivables_json, terms_json, snapshot_json)
+    return run_liquidity_runway(positions, receivables, snapshot, terms, prices_df, horizon_days=20,
+                                n_paths=n_paths, winsorize_sigma=_winsor(winsorize))
+
+
+@st.cache_data(ttl=HISTORY_TTL_SECONDS, show_spinner=False, max_entries=8)
+def cached_episode_closes(episode_key: str) -> pd.DataFrame:
+    """Observed closes for a crisis episode; history does not change, so it is cached for a day."""
+    return fetch_episode_closes(CRISIS_EPISODES[episode_key])
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def cached_crisis_replay(
+    positions_json: str, receivables_json: str, terms_json: str, snapshot_json: str, episode_key: str,
+    winsorize: bool,
+) -> CrisisReplayResult:
+    positions, receivables, terms, snapshot = _load_inputs(positions_json, receivables_json, terms_json, snapshot_json)
+    closes = cached_episode_closes(episode_key)
+    return run_crisis_replay(positions, receivables, snapshot, terms, closes, CRISIS_EPISODES[episode_key],
+                             winsorize_sigma=_winsor(winsorize))
 
 
 def market_data_status(market: MarketLoadResult) -> tuple[str, str]:

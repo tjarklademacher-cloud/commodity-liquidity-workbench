@@ -18,11 +18,16 @@ from core.schemas import (
     FacilityTerms,
     MarketLoadResult,
 )
+from core.crisis_replay import CRISIS_EPISODES
+from core.hedge_optimizer import ALL_COMMODITIES
 from core.stress_engine import run_stress_scenario
 from ui.cache import (
+    cached_crisis_replay,
     cached_custom_market,
+    cached_hedge_frontier,
     cached_live_market,
     cached_monte_carlo,
+    cached_runway,
     cached_sample_market,
     cached_scenario_suite,
     market_data_status,
@@ -33,10 +38,14 @@ from ui.charts import (
     build_borrowing_base_waterfall,
     build_buffer_profile_chart,
     build_correlation_heatmap,
+    build_crisis_replay_chart,
     build_haircut_decomposition_chart,
+    build_hedge_frontier_chart,
     build_mc_distribution_chart,
     build_receivables_concentration_chart,
     build_replay_chart,
+    build_runway_breach_chart,
+    build_runway_fan_chart,
     build_shock_heatmap,
     build_stress_sweep_chart,
     build_volatility_history_chart,
@@ -92,6 +101,8 @@ WIDGET_DEFAULTS: dict[str, object] = {
     **{f"shock_{t}": int(round(DEFAULT_FACILITY_TERMS.default_active_shock_pct * 100)) for t in REQUIRED_TICKERS},
     "mc_horizon": 5,
     "mc_sims": 5000,
+    "hedge_scope": ALL_COMMODITIES,
+    "replay_source": "loaded",
 }
 MC_HORIZONS = [1, 5, 10, 20]
 MC_SIM_OPTIONS = [1000, 2500, 5000, 10000]
@@ -187,7 +198,7 @@ def sidebar_market_feed() -> MarketLoadResult:
         with st.spinner("Loading front-month futures from Yahoo Finance"):
             market = cached_live_market("1y", winsorize)
     elif mode == FEED_UPLOAD:
-        uploaded = st.sidebar.file_uploader("Price CSV (Date, GC=F, HG=F, LBR=F, CC=F)", type=["csv"])
+        uploaded = st.sidebar.file_uploader("Price CSV (Date, GC=F, HG=F, LBR=F, CC=F, KC=F, SB=F)", type=["csv"])
         template = pd.read_csv(DEFAULT_SAMPLE_CSV_PATH).tail(60).to_csv(index=False)
         st.sidebar.download_button(
             "Download CSV template", data=template, file_name="price_template.csv",
@@ -278,9 +289,9 @@ def main() -> None:
     ss = st.session_state
 
     header = st.container()
-    (tab_overview, tab_cert, tab_inv, tab_ar, tab_stress, tab_heat, tab_mc, tab_replay) = st.tabs(
+    (tab_overview, tab_cert, tab_inv, tab_ar, tab_stress, tab_heat, tab_mc, tab_hedge, tab_replay) = st.tabs(
         ["Overview", "Borrowing base", "Inventory", "Receivables", "Stress sweep", "Scenario heatmap",
-         "Monte Carlo LaR", "Historical replay"]
+         "Monte Carlo LaR", "Hedging", "Replays"]
     )
     nonce = ss.editor_nonce
 
@@ -311,6 +322,7 @@ def main() -> None:
     with st.spinner("Running scenario analytics"):
         sweep, grid, replay = cached_scenario_suite(*inputs, market.prices_df, market.vol_df)
         mc = cached_monte_carlo(*inputs, market.prices_df, horizon, n_sims, bool(ss["winsorize"]))
+        runway = cached_runway(*inputs, market.prices_df, n_sims, bool(ss["winsorize"]))
     ss["active_regime"] = str(stress.regime)
 
     if is_custom:
@@ -389,7 +401,7 @@ def main() -> None:
         with col_main:
             chart(build_buffer_profile_chart(sweep, None if is_custom else parallel_shock), "chart_profile",
                   "Net liquidity buffer across parallel price shocks",
-                  "Uniform shock to all four commodities. Shading: green healthy, amber margin trap or BB "
+                  "Same percentage shock to every commodity. Shading: green healthy, amber margin trap or BB "
                   "deficiency, red critical squeeze.")
         with col_side:
             with panel("briefing"):
@@ -412,6 +424,9 @@ def main() -> None:
                                  f"<b>{fmt_pct(grid.squeeze_share, 0)}</b> of mixed metals/softs grid scenarios "
                                  f"end in a critical squeeze. Worst: metals {grid.worst_metals_shock:+.0%}, softs "
                                  f"{grid.worst_softs_shock:+.0%} ({fmt_signed_millions(grid.worst_net_buffer)})."))
+                findings.append(("breach" if runway.prob_breach_within_horizon > 0 else "neutral",
+                                 f"<b>{fmt_pct(runway.prob_breach_within_horizon, 1)}</b> of {runway.n_paths:,} "
+                                 f"simulated paths run out of liquidity within {runway.horizon_days} trading days."))
                 if replay is not None:
                     findings.append(("caution" if replay.deficiency_days else "neutral",
                                      f"Replay: base below drawn on <b>{replay.deficiency_days} of {replay.n_days} "
@@ -580,16 +595,17 @@ def main() -> None:
                  "context": f"P(BB deficiency) {fmt_pct(mc.prob_deficiency, 1)}"},
             ]
         )
-        col_main, col_side = st.columns([2.1, 1], gap="medium")
-        with col_main:
-            chart(build_mc_distribution_chart(mc), "chart_mc", "Simulated net liquidity buffer",
-                  f"{mc.n_sims:,} correlated lognormal paths over {mc.horizon_days} trading days, seed {mc.seed}. "
-                  "Red: paths at or below the 5th percentile.")
-        with col_side:
+        chart(build_mc_distribution_chart(mc), "chart_mc", "Simulated net liquidity buffer",
+              f"{mc.n_sims:,} correlated lognormal paths over {mc.horizon_days} trading days, seed {mc.seed}. "
+              "Red: paths at or below the 5th percentile.")
+        col_corr, col_vols = st.columns([1.25, 1], gap="medium")
+        with col_corr:
             chart(build_correlation_heatmap(mc, COMMODITY_SPECS), "chart_corr", "Return correlation",
                   f"Daily log returns, last {mc.lookback_days} observations.")
+        with col_vols:
             with panel("mc_vols"):
-                section_head("Horizon volatility and worst path")
+                section_head("Horizon volatility and worst path",
+                             "Standard deviation of the simulated move, and the move on the worst path.")
                 vol_df = pd.DataFrame(
                     [{"Commodity": COMMODITY_SPECS[t].name, "Horizon vol": mc.horizon_vols[t] * 100,
                       "Worst-path move": mc.worst_scenario_shocks[t] * 100} for t in REQUIRED_TICKERS]
@@ -602,51 +618,157 @@ def main() -> None:
             provenance_note("The bundled sample draws each commodity independently, so correlations are near "
                             "zero. Switch to the live feed for observed co-movement.")
 
-    with tab_replay:
-        if market.source_label.startswith("Live"):
-            source_note = "Prices: Yahoo Finance front-month futures (observed)."
-        elif market.source_label.startswith("Custom"):
-            source_note = "Prices: uploaded CSV."
-        else:
-            source_note = "Prices: bundled calibrated sample (synthetic series, not observed market history)."
-        provenance_note(f"{source_note} Borrowing base, margin and buffer are modelled from those prices with "
-                        "today's quantities, receivables and drawn balance held fixed.")
-        if replay is None:
-            st.info("Not enough price and volatility history in the active feed to run a replay.")
-        else:
+        with panel("runway"):
+            section_head("Liquidity runway, next 20 trading days",
+                         f"{runway.n_paths:,} daily correlated paths (same covariance as above, seed {runway.seed}). "
+                         "Each day applies the cumulative price move since today; a path runs out of liquidity "
+                         "on the first day its net buffer is below zero.")
+            day20 = {k: v[-1] for k, v in runway.percentiles.items()}
             render_kpi_row(
                 [
-                    {"label": "BB deficiency days", "value": f"{replay.deficiency_days} / {replay.n_days}",
-                     "context": f"Base below drawn balance, {replay.start_date} to {replay.end_date}"},
-                    {"label": "Minimum headroom", "value": fmt_millions(replay.min_headroom),
-                     "context": f"on {replay.min_headroom_date}"},
-                    {"label": "Worst 5-day margin call", "value": fmt_millions(replay.max_5d_vm_outflow),
-                     "context": f"window ending {replay.max_5d_vm_outflow_date}"},
-                    {"label": "Lowest stressed buffer", "value": fmt_signed_millions(replay.min_stressed_buffer),
-                     "context": f"on {replay.min_stressed_buffer_date}",
-                     "status": "breach" if replay.min_stressed_buffer < 0 else None, "status_text": "Below zero"},
+                    {"label": "Shortfall within 20 days", "value": fmt_pct(runway.prob_breach_within_horizon, 2),
+                     "context": f"{sum(runway.first_breach_counts):,} of {runway.n_paths:,} paths"},
+                    {"label": "Median day of first shortfall",
+                     "value": f"Day {runway.median_first_breach_day:.0f}"
+                     if runway.median_first_breach_day is not None else "None",
+                     "context": "Among paths that run short"},
+                    {"label": "Day-20 buffer, 5th percentile", "value": fmt_signed_millions(day20["p5"]),
+                     "context": "Adverse tail after four weeks"},
+                    {"label": "Day-20 buffer, median", "value": fmt_signed_millions(day20["p50"]),
+                     "context": f"Today without shock {fmt_signed_millions(baseline_point.net_liquidity_buffer)}"
+                     if baseline_point is not None else ""},
                 ]
             )
-            chart(build_replay_chart(replay, terms), "chart_replay", "Replay of today's book",
-                  "Stressed buffer = cash + headroom + 5-day net variation margin - deficiency cure.")
-            with st.expander("Daily replay table"):
-                rf = replay.frame.reset_index()
-                view = pd.DataFrame({
-                    "Date": rf["date"].dt.date,
-                    "Borrowing base": rf["borrowing_base"] / 1e6,
-                    "Headroom": rf["headroom"] / 1e6,
-                    "BB cure": rf["bb_deficiency_cure"] / 1e6,
-                    "Daily VM": rf["daily_vm"] / 1e6,
-                    "5-day VM": rf["rolling_vm"] / 1e6,
-                    "Stressed buffer": rf["stressed_buffer"] / 1e6,
-                })
-                st.dataframe(view, width="stretch", hide_index=True,
-                             column_config={c: _money_column(c) for c in view.columns if c != "Date"})
-                st.download_button(
-                    "Download replay (CSV, full precision)", data=rf.to_csv(index=False),
-                    file_name=f"historical_replay_{market.as_of_date.replace('-', '')}.csv",
-                    mime="text/csv", key="dl_replay",
+            col_fan, col_prob = st.columns([2.1, 1], gap="medium")
+            with col_fan:
+                section_head("Net liquidity buffer by day", "Median with 25th to 75th and 5th to 95th percentile bands.")
+                st.plotly_chart(build_runway_fan_chart(runway), width="stretch", theme=None, config=PLOTLY_CONFIG,
+                                key="chart_runway_fan")
+            with col_prob:
+                section_head("Share of paths already short", "Cumulative, by trading day.")
+                st.plotly_chart(build_runway_breach_chart(runway), width="stretch", theme=None,
+                                config=PLOTLY_CONFIG, key="chart_runway_prob")
+
+    with tab_hedge:
+        scope_names = {ALL_COMMODITIES: "All commodities together",
+                       **{t: COMMODITY_SPECS[t].name for t in REQUIRED_TICKERS}}
+        col_sel, col_note = st.columns([1, 2.4], gap="medium")
+        with col_sel:
+            scope = st.selectbox("Commodity to re-hedge", list(scope_names), key="hedge_scope",
+                                 format_func=lambda k: scope_names[k])
+        with col_note:
+            provenance_note("Sweeps the futures hedge from 0% to 100% of physical quantity"
+                            + (" for every commodity at once." if scope == ALL_COMMODITIES
+                               else f" for {scope_names[scope].lower()}; other commodities keep today's hedges.")
+                            + " Each ratio is run through the same 41 parallel shocks as the stress sweep.")
+        frontier = cached_hedge_frontier(*inputs, scope)
+        nlbs = [p.net_liquidity_buffer for p in sweep.points]
+        cur_share = sum(v >= 0 for v in nlbs) / len(nlbs)
+        best = frontier.recommended_index
+        render_kpi_row(
+            [
+                {"label": "Current hedge ratio", "value": fmt_pct(frontier.current_ratio, 0),
+                 "context": "Hedged value / physical value" if scope == ALL_COMMODITIES else "Hedged / physical qty"},
+                {"label": "Liquidity-optimal ratio", "value": fmt_pct(frontier.recommended_ratio, 0),
+                 "context": "Most shocks with a buffer at or above zero"},
+                {"label": "Shocks with buffer >= 0", "value": f"{cur_share:.0%} to {frontier.positive_share[best]:.0%}",
+                 "context": "Current vs. liquidity-optimal, of 41 shocks"},
+                {"label": "Worst-case buffer", "value": fmt_signed_millions(frontier.min_buffer[best]),
+                 "context": f"At the optimal ratio; current {fmt_signed_millions(min(nlbs))}"},
+                {"label": "Unprotected in a 20% fall", "value": fmt_millions(frontier.crash_value_loss[best]),
+                 "context": "Inventory value lost at the optimal ratio"},
+            ]
+        )
+        chart(build_hedge_frontier_chart(frontier), "chart_hedge", "Hedge ratio trade-off",
+              "More hedging protects inventory value and the borrowing base in a fall, but adds variation margin "
+              "calls in a rally. The liquidity-optimal ratio ignores price risk; read it against the lower panel.")
+
+    with tab_replay:
+        replay_names = {"loaded": "Loaded price history (past year)",
+                        **{k: e.name for k, e in CRISIS_EPISODES.items()}}
+        replay_choice = st.selectbox("Replay", list(replay_names), key="replay_source",
+                                     format_func=lambda k: replay_names[k])
+        if replay_choice != "loaded":
+            episode = CRISIS_EPISODES[replay_choice]
+            try:
+                with st.spinner("Loading observed futures prices for this episode"):
+                    crisis = cached_crisis_replay(*inputs, replay_choice, bool(ss["winsorize"]))
+            except Exception as exc:  # noqa: BLE001 - network or data failure must not break the page
+                crisis = None
+                st.info(f"Historical prices for this episode could not be loaded ({type(exc).__name__}). "
+                        "This replay needs internet access to Yahoo Finance; the other views are unaffected.")
+            if crisis is not None:
+                missing = [COMMODITY_SPECS[t].name for t in crisis.missing_tickers]
+                provenance_note(
+                    f"{episode.note} Prices: Yahoo Finance front-month futures, observed {crisis.first_date} to "
+                    f"{crisis.last_date}. Each day's cumulative move is applied to today's spot prices and haircuts "
+                    "use the 30-day volatility observed that day."
+                    + (f" Not covered (no Yahoo history in this window, held at today's price): {', '.join(missing)}."
+                       if missing else "")
                 )
+                biggest = max(crisis.max_moves, key=lambda t: abs(crisis.max_moves[t]))
+                render_kpi_row(
+                    [
+                        {"label": "Worst net buffer", "value": fmt_signed_millions(crisis.worst_net_buffer),
+                         "context": f"on {crisis.worst_date}",
+                         "status": regime_status(crisis.worst_regime), "status_text": regime_label(crisis.worst_regime)},
+                        {"label": "Days in critical squeeze", "value": f"{crisis.critical_days} / {len(crisis.frame)}",
+                         "context": "Trading days with a buffer below zero"},
+                        {"label": "Peak variation margin call", "value": fmt_millions(crisis.peak_vm_outflow),
+                         "context": f"cumulative, on {crisis.peak_vm_date}"},
+                        {"label": "Largest move", "value": f"{crisis.max_moves[biggest]:+.1%}",
+                         "context": f"{COMMODITY_SPECS[biggest].name}, from episode start"},
+                    ]
+                )
+                chart(build_crisis_replay_chart(crisis, COMMODITY_SPECS, terms), "chart_crisis",
+                      f"Today's book through the {episode.name.split(' (')[0].lower()}",
+                      "Top: observed prices. Below: modelled with today's quantities, receivables, drawn balance "
+                      "and facility terms. Dashed: facility limit. Dotted: drawn balance.")
+        if replay_choice == "loaded":
+            if market.source_label.startswith("Live"):
+                source_note = "Prices: Yahoo Finance front-month futures (observed)."
+            elif market.source_label.startswith("Custom"):
+                source_note = "Prices: uploaded CSV."
+            else:
+                source_note = "Prices: bundled calibrated sample (synthetic series, not observed market history)."
+            provenance_note(f"{source_note} Borrowing base, margin and buffer are modelled from those prices with "
+                            "today's quantities, receivables and drawn balance held fixed.")
+            if replay is None:
+                st.info("Not enough price and volatility history in the active feed to run a replay.")
+            else:
+                render_kpi_row(
+                    [
+                        {"label": "BB deficiency days", "value": f"{replay.deficiency_days} / {replay.n_days}",
+                         "context": f"Base below drawn balance, {replay.start_date} to {replay.end_date}"},
+                        {"label": "Minimum headroom", "value": fmt_millions(replay.min_headroom),
+                         "context": f"on {replay.min_headroom_date}"},
+                        {"label": "Worst 5-day margin call", "value": fmt_millions(replay.max_5d_vm_outflow),
+                         "context": f"window ending {replay.max_5d_vm_outflow_date}"},
+                        {"label": "Lowest stressed buffer", "value": fmt_signed_millions(replay.min_stressed_buffer),
+                         "context": f"on {replay.min_stressed_buffer_date}",
+                         "status": "breach" if replay.min_stressed_buffer < 0 else None, "status_text": "Below zero"},
+                    ]
+                )
+                chart(build_replay_chart(replay, terms), "chart_replay", "Replay of today's book",
+                      "Stressed buffer = cash + headroom + 5-day net variation margin - deficiency cure.")
+                with st.expander("Daily replay table"):
+                    rf = replay.frame.reset_index()
+                    view = pd.DataFrame({
+                        "Date": rf["date"].dt.date,
+                        "Borrowing base": rf["borrowing_base"] / 1e6,
+                        "Headroom": rf["headroom"] / 1e6,
+                        "BB cure": rf["bb_deficiency_cure"] / 1e6,
+                        "Daily VM": rf["daily_vm"] / 1e6,
+                        "5-day VM": rf["rolling_vm"] / 1e6,
+                        "Stressed buffer": rf["stressed_buffer"] / 1e6,
+                    })
+                    st.dataframe(view, width="stretch", hide_index=True,
+                                 column_config={c: _money_column(c) for c in view.columns if c != "Date"})
+                    st.download_button(
+                        "Download replay (CSV, full precision)", data=rf.to_csv(index=False),
+                        file_name=f"historical_replay_{market.as_of_date.replace('-', '')}.csv",
+                        mime="text/csv", key="dl_replay",
+                    )
 
 
 main()

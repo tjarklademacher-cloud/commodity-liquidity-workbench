@@ -20,8 +20,8 @@ from core.data_feed import (
 )
 from core.schemas import COMMODITY_SPECS, REQUIRED_TICKERS
 
-EXPECTED_SPOT = {"GC=F": 2710.00, "HG=F": 4.3500, "LBR=F": 565.00, "CC=F": 8150.00}
-EXPECTED_VOL = {"GC=F": 0.155, "HG=F": 0.235, "LBR=F": 0.385, "CC=F": 0.510}
+EXPECTED_SPOT = {"GC=F": 2710.00, "HG=F": 4.3500, "LBR=F": 565.00, "CC=F": 8150.00, "KC=F": 2.75, "SB=F": 0.171}
+EXPECTED_VOL = {"GC=F": 0.155, "HG=F": 0.235, "LBR=F": 0.385, "CC=F": 0.510, "KC=F": 0.360, "SB=F": 0.270}
 
 
 def test_sample_csv_shape_and_dates(sample_prices):
@@ -36,6 +36,15 @@ def test_generator_is_deterministic(tmp_path, sample_prices):
     reloaded = pd.read_csv(tmp_path / "s.csv", index_col="Date", parse_dates=True)
     np.testing.assert_allclose(regenerated.to_numpy(), sample_prices.to_numpy())
     np.testing.assert_allclose(reloaded.to_numpy(), sample_prices.to_numpy())
+
+
+def test_cents_quoted_contracts_are_scaled_to_usd(sample_prices, snapshot):
+    assert sample_prices["KC=F"].iloc[-1] == pytest.approx(275.0)
+    assert sample_prices["SB=F"].iloc[-1] == pytest.approx(17.10)
+    cleaned = _clean_price_frame(sample_prices)
+    assert cleaned["KC=F"].iloc[-1] == pytest.approx(2.75)
+    assert cleaned["GC=F"].iloc[-1] == pytest.approx(2710.0)
+    assert snapshot["SB=F"].spot_price == pytest.approx(0.171)
 
 
 @pytest.mark.parametrize("ticker", REQUIRED_TICKERS)
@@ -100,6 +109,8 @@ def test_non_positive_prices_are_cleaned():
             "HG=F": [4.0, 4.1, 4.2, 4.3, 4.4, 4.5],
             "LBR=F": [500.0, 501.0, 502.0, 503.0, 504.0, 505.0],
             "CC=F": [8000.0, 8010.0, 8020.0, 8030.0, 8040.0, 8050.0],
+            "KC=F": [270.0, 271.0, 272.0, 273.0, 274.0, 275.0],
+            "SB=F": [17.0, 17.1, 17.2, 17.3, 17.4, 17.5],
         }
     )
     cleaned = _clean_price_frame(df)
@@ -118,6 +129,8 @@ def test_all_non_positive_ticker_is_rejected():
             "HG=F": [4.0, 4.1, 4.2],
             "LBR=F": [500.0, 501.0, 502.0],
             "CC=F": [8000.0, 8010.0, 8020.0],
+            "KC=F": [270.0, 271.0, 272.0],
+            "SB=F": [17.0, 17.1, 17.2],
         }
     )
     with pytest.raises(ValueError, match="GC=F"):

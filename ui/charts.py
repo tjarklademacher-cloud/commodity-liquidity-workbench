@@ -12,10 +12,13 @@ from core.schemas import (
     REQUIRED_TICKERS,
     BorrowingBaseResult,
     CommoditySpec,
+    CrisisReplayResult,
     FacilityTerms,
+    HedgeFrontierResult,
     HistoricalReplayResult,
     InventoryValuation,
     MonteCarloResult,
+    RunwayResult,
     ShockGridResult,
     StressScenarioResult,
     StressSweepResult,
@@ -259,7 +262,7 @@ def build_buffer_profile_chart(sweep_result: StressSweepResult, active_shock_pct
         fig.add_vline(x=be, line=dict(color=CAUTION, dash="dot", width=1))
         _note(fig, be, f"Deficiency {be:+.2f}%", CAUTION, top=False, align="right")
     apply_institutional_layout(fig, height=430, yaxis_title="Net liquidity buffer (USD M)",
-                               xaxis_title="Parallel price shock to all four commodities (%)")
+                               xaxis_title="Parallel price shock, all commodities (%)")
     fig.update_layout(showlegend=False, hovermode="closest", margin=dict(t=12))
     fig.update_xaxes(ticksuffix="%", dtick=5)
     fig.update_yaxes(tickprefix="$")
@@ -311,7 +314,7 @@ def build_stress_sweep_chart(
         subplot_title.xanchor = "left"
     fig.update_layout(margin=dict(t=28, b=48), legend=dict(y=0.42, yanchor="bottom", x=1.0, xanchor="right"))
     fig.update_xaxes(ticksuffix="%", dtick=5)
-    fig.update_xaxes(title=dict(text="Parallel price shock to all four commodities (%)",
+    fig.update_xaxes(title=dict(text="Parallel price shock, all commodities (%)",
                                 font=dict(size=11, color=COLORS["muted"])), row=2, col=1)
     fig.update_yaxes(tickprefix="$")
     fig.data[0].showlegend = False
@@ -454,11 +457,11 @@ def build_correlation_heatmap(mc: MonteCarloResult, specs: Mapping[str, Commodit
             x=names, y=names, z=z, zmin=-1, zmax=1, xgap=2, ygap=2,
             colorscale=[[0.0, "#9A3412"], [0.5, "#FFFFFF"], [1.0, COLORS["accent"]]],
             text=[[f"{v:+.2f}" for v in row] for row in z], texttemplate="%{text}",
-            textfont=dict(size=12, family=FONT_SANS), showscale=False,
+            textfont=dict(size=11, family=FONT_SANS), showscale=False,
             hovertemplate="%{y} / %{x}: %{z:+.3f}<extra></extra>",
         )
     )
-    apply_institutional_layout(fig, height=300)
+    apply_institutional_layout(fig, height=320)
     fig.update_layout(hovermode="closest", margin=dict(l=64, r=8, t=8, b=32))
     fig.update_yaxes(autorange="reversed", showgrid=False)
     fig.update_xaxes(showline=False, ticks="")
@@ -532,4 +535,136 @@ def build_replay_chart(replay: HistoricalReplayResult, terms: FacilityTerms) -> 
     fig.update_layout(hovermode="x unified", showlegend=False, margin=dict(t=28, b=32))
     fig.update_yaxes(range=[y_lo, y_hi], row=1, col=1)
     fig.update_yaxes(tickprefix="$")
+    return fig
+
+
+def build_hedge_frontier_chart(res: HedgeFrontierResult) -> go.Figure:
+    """Two panels over hedge ratio: buffer in a +20% rally / -20% crash and worst case; unhedged crash loss."""
+    x = [r * 100 for r in res.ratios]
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.12, row_heights=[0.6, 0.4],
+        subplot_titles=("Net liquidity buffer (USD M)", "Unhedged inventory value lost in a 20% price fall (USD M)"),
+    )
+    series = [
+        ("Buffer in a +20% rally", res.buffer_up_20, BREACH, "solid"),
+        ("Buffer in a -20% crash", res.buffer_down_20, CAUTION, "dash"),
+        ("Worst case across -20% to +20%", res.min_buffer, PORTFOLIO_COLOR, "solid"),
+    ]
+    for name, ys, color, dash in series:
+        fig.add_trace(go.Scatter(x=x, y=[v / 1e6 for v in ys], mode="lines+markers", name=name,
+                                 line=dict(color=color, width=2 if color == PORTFOLIO_COLOR else 1.6, dash=dash),
+                                 marker=dict(size=4),
+                                 hovertemplate=f"Hedge %{{x:.0f}}%<br>{name}: $%{{y:,.2f}}M<extra></extra>"),
+                      row=1, col=1)
+    fig.add_hline(y=0.0, line=dict(color=BREACH, dash="dot", width=1), row=1, col=1)
+    fig.add_trace(go.Bar(x=x, y=[v / 1e6 for v in res.crash_value_loss], name="Unhedged loss",
+                         marker=dict(color="#CBD5E1"), showlegend=False,
+                         hovertemplate="Hedge %{x:.0f}%<br>Loss $%{y:,.2f}M<extra></extra>"),
+                  row=2, col=1)
+    for xv, label, color, top in [(res.current_ratio * 100, f"Current {res.current_ratio:.0%}", COLORS["muted"], True),
+                                  (res.recommended_ratio * 100, f"Liquidity-optimal {res.recommended_ratio:.0%}",
+                                   COLORS["accent"], False)]:
+        fig.add_vline(x=xv, line=dict(color=color, width=1.5, dash="dash" if color == COLORS["muted"] else "solid"))
+        _note(fig, xv, label, color, top=top, row=1)
+    apply_institutional_layout(fig, height=520)
+    for subplot_title in fig.layout.annotations[:2]:
+        subplot_title.font = dict(color=COLORS["text_secondary"], size=12, family=FONT_SANS)
+        subplot_title.x = 0.0
+        subplot_title.xanchor = "left"
+    fig.update_layout(hovermode="x unified", margin=dict(t=28, b=48),
+                      legend=dict(y=1.06, yanchor="bottom", x=1.0, xanchor="right"))
+    fig.update_xaxes(ticksuffix="%", range=[-2.5, 102.5], dtick=10)
+    fig.update_xaxes(title=dict(text="Hedge ratio (futures as % of physical quantity)",
+                                font=dict(size=11, color=COLORS["muted"])), row=2, col=1)
+    fig.update_yaxes(tickprefix="$")
+    return fig
+
+
+def build_runway_fan_chart(rw: RunwayResult) -> go.Figure:
+    """Percentile fan of the simulated net liquidity buffer by trading day."""
+    days = rw.days
+    p = {k: [v / 1e6 for v in vals] for k, vals in rw.percentiles.items()}
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=days, y=p["p95"], mode="lines", line=dict(width=0), hoverinfo="skip",
+                             showlegend=False))
+    fig.add_trace(go.Scatter(x=days, y=p["p5"], mode="lines", line=dict(width=0), fill="tonexty",
+                             fillcolor="rgba(27, 73, 101, 0.10)", name="5th to 95th percentile",
+                             hovertemplate="Day %{x}: 5th pct $%{y:,.2f}M<extra></extra>"))
+    fig.add_trace(go.Scatter(x=days, y=p["p75"], mode="lines", line=dict(width=0), hoverinfo="skip",
+                             showlegend=False))
+    fig.add_trace(go.Scatter(x=days, y=p["p25"], mode="lines", line=dict(width=0), fill="tonexty",
+                             fillcolor="rgba(27, 73, 101, 0.22)", name="25th to 75th percentile",
+                             hovertemplate="Day %{x}: 25th pct $%{y:,.2f}M<extra></extra>"))
+    fig.add_trace(go.Scatter(x=days, y=p["p50"], mode="lines+markers", line=dict(color=COLORS["accent"], width=2),
+                             marker=dict(size=4), name="Median",
+                             hovertemplate="Day %{x}: median $%{y:,.2f}M<extra></extra>"))
+    fig.add_hline(y=0.0, line=dict(color=BREACH, dash="dash", width=1))
+    apply_institutional_layout(fig, height=360, yaxis_title="Net liquidity buffer (USD M)",
+                               xaxis_title="Trading days from today")
+    fig.update_layout(hovermode="x unified", margin=dict(t=36))
+    fig.update_xaxes(dtick=2)
+    fig.update_yaxes(tickprefix="$")
+    return fig
+
+
+def build_runway_breach_chart(rw: RunwayResult) -> go.Figure:
+    """Cumulative probability that the buffer has gone below zero by each trading day."""
+    fig = go.Figure(go.Scatter(
+        x=rw.days, y=[v * 100 for v in rw.prob_breached_by_day], mode="lines+markers", line_shape="hv",
+        line=dict(color=BREACH, width=2), marker=dict(size=4), name="Probability",
+        hovertemplate="By day %{x}: %{y:.2f}% of paths<extra></extra>",
+    ))
+    top = max([v * 100 for v in rw.prob_breached_by_day] + [1.0])
+    apply_institutional_layout(fig, height=360, yaxis_title="Paths with a shortfall (%)",
+                               xaxis_title="Trading days from today")
+    fig.update_layout(showlegend=False, hovermode="x unified", margin=dict(t=12))
+    fig.update_xaxes(dtick=2)
+    fig.update_yaxes(ticksuffix="%", range=[0, top * 1.15])
+    return fig
+
+
+def build_crisis_replay_chart(res: CrisisReplayResult, specs: Mapping[str, CommoditySpec],
+                              terms: FacilityTerms) -> go.Figure:
+    """Observed price moves (top) and the modelled borrowing base and net liquidity buffer (below)."""
+    df = res.frame
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.36, 0.32, 0.32],
+        subplot_titles=(
+            "Observed: futures price move since episode start (%)",
+            "Modelled: borrowing base vs. facility limit and drawn balance (USD M)",
+            "Modelled: net liquidity buffer (USD M)",
+        ),
+    )
+    for t in res.covered_tickers:
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df[f"move_{t}"] * 100, mode="lines", name=specs[t].name,
+            line=dict(color=COMMODITY_COLORS.get(t, PORTFOLIO_COLOR), width=1.6, dash=COMMODITY_DASH.get(t, "solid")),
+            hovertemplate=f"{specs[t].name} %{{y:+.1f}}%<extra></extra>"), row=1, col=1)
+    fig.add_hline(y=0.0, line=dict(color=COLORS["border"], width=1), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["shocked_bb"] / 1e6, mode="lines", name="Borrowing base",
+                             line=dict(color=PORTFOLIO_COLOR, width=1.8), showlegend=False,
+                             hovertemplate="BB $%{y:,.2f}M<extra></extra>"), row=2, col=1)
+    fig.add_hline(y=terms.facility_limit / 1e6, line=dict(color=COLORS["reference"], dash="dash", width=1.2),
+                  row=2, col=1)
+    fig.add_hline(y=terms.drawn_revolver / 1e6, line=dict(color=BREACH, dash="dot", width=1.2), row=2, col=1)
+    nlb = df["net_liquidity_buffer"] / 1e6
+    fig.add_trace(go.Scatter(x=df.index, y=nlb.clip(lower=0.0), mode="lines", line=dict(width=0), fill="tozeroy",
+                             fillcolor="rgba(22, 101, 52, 0.10)", showlegend=False, hoverinfo="skip"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=nlb.clip(upper=0.0), mode="lines", line=dict(width=0), fill="tozeroy",
+                             fillcolor="rgba(153, 27, 27, 0.18)", showlegend=False, hoverinfo="skip"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=nlb, mode="lines", name="Net buffer", showlegend=False,
+                             line=dict(color=PORTFOLIO_COLOR, width=1.6),
+                             customdata=[regime_label(r) for r in df["regime"]],
+                             hovertemplate="Buffer $%{y:+,.2f}M (%{customdata})<extra></extra>"), row=3, col=1)
+    fig.add_hline(y=0.0, line=dict(color=BREACH, width=1, dash="dash"), row=3, col=1)
+    apply_institutional_layout(fig, height=760)
+    for subplot_title in fig.layout.annotations[:3]:
+        subplot_title.font = dict(color=COLORS["text_secondary"], size=12, family=FONT_SANS)
+        subplot_title.x = 0.0
+        subplot_title.xanchor = "left"
+    fig.update_layout(hovermode="x unified", margin=dict(t=28, b=32),
+                      legend=dict(y=1.04, yanchor="bottom", x=1.0, xanchor="right"))
+    fig.update_yaxes(ticksuffix="%", row=1, col=1)
+    fig.update_yaxes(tickprefix="$", row=2, col=1)
+    fig.update_yaxes(tickprefix="$", row=3, col=1)
     return fig

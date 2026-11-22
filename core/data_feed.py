@@ -28,6 +28,8 @@ SAMPLE_CALIBRATION: dict[str, dict[str, float]] = {
     "HG=F": {"start": 3.85, "target_end": 4.35, "annual_vol": 0.235, "drift": 0.08},
     "LBR=F": {"start": 495.0, "target_end": 565.0, "annual_vol": 0.385, "drift": 0.09},
     "CC=F": {"start": 6950.0, "target_end": 8150.0, "annual_vol": 0.510, "drift": 0.12},
+    "KC=F": {"start": 238.0, "target_end": 275.0, "annual_vol": 0.360, "drift": 0.08},
+    "SB=F": {"start": 19.40, "target_end": 17.10, "annual_vol": 0.270, "drift": -0.05},
 }
 
 
@@ -50,7 +52,7 @@ def generate_sample_csv(output_path: Path | str = DEFAULT_SAMPLE_CSV_PATH, seed:
         log_path = np.concatenate([[0.0], np.cumsum(log_rets)])
         raw_prices = cfg["start"] * np.exp(log_path)
         scale_factor = cfg["target_end"] / raw_prices[-1]
-        data[ticker] = np.round(raw_prices * scale_factor, 4 if ticker == "HG=F" else 2)
+        data[ticker] = np.round(raw_prices * scale_factor, 4 if ticker in ("HG=F", "KC=F", "SB=F") else 2)
     df = pd.DataFrame(data, index=pd.DatetimeIndex(dates, name="Date"))
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -77,7 +79,7 @@ def _clean_price_frame(df: pd.DataFrame) -> pd.DataFrame:
 
     frame = frame.loc[:, list(REQUIRED_TICKERS)].copy()
     for ticker in REQUIRED_TICKERS:
-        frame[ticker] = pd.to_numeric(frame[ticker], errors="coerce")
+        frame[ticker] = pd.to_numeric(frame[ticker], errors="coerce") * COMMODITY_SPECS[ticker].quote_scale
     frame = frame.where(frame > 0.0)
     frame = frame.ffill(limit=5)
     frame = frame.dropna(how="all")
