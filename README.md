@@ -1,6 +1,6 @@
 # Commodity Collateral, Borrowing Base & Liquidity Stress Workbench
 
-> **Live app:** `https://<your-app-name>.streamlit.app` (replace after deploying to Streamlit Community Cloud)
+> **Live app:** https://commodity-liquidity-workbench.streamlit.app
 >
 > **Screenshot:** save a capture of the Overview tab as `docs/dashboard.png`, then replace this line with
 > `![Workbench overview](docs/dashboard.png)`
@@ -104,4 +104,4 @@ To rebuild the bundled price file:
 1. Push this repository to GitHub.
 2. At [share.streamlit.io](https://share.streamlit.io), create an app from the repository with main
    file `app.py`, and pick Python 3.12 under Advanced settings.
-3. No secrets are needed. Paste the resulting URL into the placeholder at the top of this file.
+3. No secrets are needed.
