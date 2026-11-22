@@ -402,6 +402,10 @@ class HedgeFrontierResult(BaseModel):
     current_ratio: float
     recommended_ratio: float
     recommended_index: int
+    max_margin_need: list[float] = Field(default_factory=list)
+    basis_exposure: list[float] = Field(default_factory=list)
+    basis_shock_pct: float = 0.0
+    pareto_efficient: list[bool] = Field(default_factory=list)
 
 
 class RunwayResult(BaseModel):

@@ -58,11 +58,17 @@ def run_hedge_frontier(
     shock_min: float = -0.20,
     shock_max: float = 0.20,
     shock_steps: int = 41,
+    basis_shock_pct: float = 0.05,
 ) -> HedgeFrontierResult:
     """Sweep the hedge ratio of `scope` (a ticker, or ALL) from 0% to 100% of physical quantity.
 
     The recommended ratio maximizes the share of parallel shocks with a non-negative net liquidity buffer;
-    ties go to the higher worst-case buffer, then to the higher ratio (more price protection).
+    ties go to the higher worst-case buffer, then to the higher ratio (more price protection). It is a
+    liquidity objective only. The multi-objective outputs are reported without weights:
+      max_margin_need  = VM payable + IM step-up at the largest rally in the grid
+      basis_exposure   = hedged notional x basis_shock_pct (P&L hit if the basis moved that far against
+                         the hedged inventory; illustrative size)
+      pareto_efficient = no other ratio has both a higher worst-case buffer and a lower unhedged crash loss
     """
     if scope != ALL_COMMODITIES and scope not in {p.ticker for p in positions}:
         raise ValueError(f"No position for {scope}")
@@ -73,9 +79,14 @@ def run_hedge_frontier(
     i_down = int(np.argmin(np.abs(shocks - shock_min)))
 
     min_buffer, positive_share, up, down, crash_loss, base_bb = [], [], [], [], [], []
+    margin_need, basis_exp = [], []
     for ratio in ratios:
         trial = _with_ratio(positions, scope, float(ratio))
-        nlb = evaluate_shock_matrix(trial, receivables, market_snapshot, terms, matrix, specs)["net_liquidity_buffer"]
+        res = evaluate_shock_matrix(trial, receivables, market_snapshot, terms, matrix, specs)
+        nlb = res["net_liquidity_buffer"]
+        margin_need.append(float(res["vm_outflow"][i_up] + res["im_addon_outflow"][i_up]))
+        basis_exp.append(float(sum(p.hedged_qty * market_snapshot[p.ticker].spot_price for p in trial
+                                   if scope == ALL_COMMODITIES or p.ticker == scope) * basis_shock_pct))
         min_buffer.append(float(nlb.min()))
         positive_share.append(float((nlb >= 0.0).mean()))
         up.append(float(nlb[i_up]))
@@ -89,6 +100,12 @@ def run_hedge_frontier(
 
     order = sorted(range(len(ratios)), key=lambda i: (positive_share[i], min_buffer[i], ratios[i]), reverse=True)
     best = order[0]
+    pareto = [
+        not any((min_buffer[j] >= min_buffer[i] and crash_loss[j] <= crash_loss[i])
+                and (min_buffer[j] > min_buffer[i] + 1e-6 or crash_loss[j] < crash_loss[i] - 1e-6)
+                for j in range(len(ratios)))
+        for i in range(len(ratios))
+    ]
     return HedgeFrontierResult(
         scope=scope,
         ratios=ratios.tolist(),
@@ -101,4 +118,8 @@ def run_hedge_frontier(
         current_ratio=_current_ratio(positions, market_snapshot, scope),
         recommended_ratio=float(ratios[best]),
         recommended_index=best,
+        max_margin_need=margin_need,
+        basis_exposure=basis_exp,
+        basis_shock_pct=basis_shock_pct,
+        pareto_efficient=pareto,
     )
