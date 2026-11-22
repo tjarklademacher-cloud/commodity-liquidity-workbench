@@ -17,13 +17,11 @@ from core.scenario_analytics import run_historical_replay, run_liquidity_monte_c
 from ui.charts import (
     build_active_shock_sources_uses_chart,
     build_borrowing_base_waterfall,
-    build_collateral_mix_donut,
+    build_buffer_profile_chart,
     build_correlation_heatmap,
-    build_facility_gauge,
     build_haircut_decomposition_chart,
     build_mc_distribution_chart,
     build_receivables_concentration_chart,
-    build_regime_ribbon,
     build_replay_chart,
     build_shock_heatmap,
     build_stress_sweep_chart,
@@ -83,7 +81,8 @@ def test_repo_has_no_local_paths_or_secrets():
 
 def test_no_deprecated_pandas_or_plotly_patterns():
     files = [ROOT / "app.py", *sorted((ROOT / "ui").glob("*.py")), *sorted((ROOT / "core").glob("*.py"))]
-    banned = ("applymap(", "inplace=True", "titlefont", "titleside", "persist_state=")
+    banned = ("applymap(", "inplace=True", "titlefont", "titleside", "persist_state=", "linear-gradient",
+              "box-shadow", "backdrop-filter", "@keyframes")
     for f in files:
         text = f.read_text(encoding="utf-8")
         for token in banned:
@@ -123,10 +122,8 @@ def test_extended_charts_serialize(market, baseline_bb, sweep, positions, receiv
     mc = run_liquidity_monte_carlo(positions, receivables, market.snapshot, terms, market.prices_df, n_sims=1000)
     replay = run_historical_replay(positions, receivables, market.prices_df, market.vol_df, terms)
     figures = [
-        build_facility_gauge(baseline_bb),
-        build_collateral_mix_donut(baseline_bb),
-        build_regime_ribbon(sweep, 0.14),
-        build_regime_ribbon(sweep, None),
+        build_buffer_profile_chart(sweep, 0.14),
+        build_buffer_profile_chart(sweep, None),
         build_shock_heatmap(grid, (0.14, 0.14)),
         build_shock_heatmap(grid, None),
         build_mc_distribution_chart(mc),
@@ -136,8 +133,11 @@ def test_extended_charts_serialize(market, baseline_bb, sweep, positions, receiv
     for fig in figures:
         assert json.loads(fig.to_json())["data"]
     assert any(sh.type == "rect" for sh in figures[-1].layout.shapes)
-    donut = figures[1].data[0]
-    assert sum(donut.values) == pytest.approx(baseline_bb.final_borrowing_base / 1e6, rel=1e-12)
+    profile = figures[0].data[0]
+    assert list(profile.y) == pytest.approx([p.net_liquidity_buffer / 1e6 for p in sweep.points])
+    assert len([sh for sh in figures[0].layout.shapes if sh.type == "rect"]) == 4
+    for fig in figures:
+        assert not fig.layout.title.text
 
 
 @pytest.fixture()
@@ -148,22 +148,24 @@ def app() -> AppTest:
 
 
 def _banner_text(at: AppTest) -> str:
-    return " ".join(m.value for m in at.markdown if "regime-banner" in m.value)
+    return " ".join(m.value for m in at.markdown if 'class="verdict"' in m.value)
 
 
 def test_app_initial_load_clean(app):
     assert len(app.exception) == 0
     assert len(app.error) == 0
     assert len(app.warning) == 0
-    assert any(e.label == "Methodology & Commercial Use Case" for e in app.expander)
+    assert any(e.label == "Methodology and use case" for e in app.expander)
+    assert [t.label for t in app.tabs] == ["Overview", "Borrowing base", "Inventory", "Receivables", "Stress sweep",
+                                           "Scenario heatmap", "Monte Carlo LaR", "Historical replay"]
     assert "Bundled sample data" in " ".join(m.value for m in app.markdown)
     assert len(app.tabs) == 8
-    assert "kpi-grid" in " ".join(m.value for m in app.markdown)
+    assert 'class="verdict"' in " ".join(m.value for m in app.markdown)
 
 
 def test_app_default_is_critical_squeeze(app):
     assert app.session_state["active_regime"] == LiquidityRegime.CRITICAL_SQUEEZE
-    assert "CRITICAL_SQUEEZE" in _banner_text(app)
+    assert "Critical squeeze" in _banner_text(app)
     assert "-$1.22M" in _banner_text(app)
 
 
@@ -171,20 +173,20 @@ def test_app_zero_shock_is_healthy(app):
     app.slider(key="parallel_shock").set_value(0).run()
     assert len(app.exception) == 0
     assert app.session_state["active_regime"] == LiquidityRegime.HEALTHY
-    assert "HEALTHY" in _banner_text(app)
+    assert "Healthy" in _banner_text(app)
 
 
 def test_app_minus_20_is_bb_deficiency(app):
     app.slider(key="parallel_shock").set_value(-20).run()
     assert len(app.exception) == 0
     assert app.session_state["active_regime"] == LiquidityRegime.BB_DEFICIENCY_WARNING
-    assert "BB_DEFICIENCY_WARNING" in _banner_text(app)
+    assert "BB deficiency" in _banner_text(app)
 
 
 def test_app_cap_tier_and_preset(app):
     app.radio(key="cap_tier").set_value(20.0).run()
     assert len(app.exception) == 0
-    assert "Cap tier: 20.0%" in " ".join(m.value for m in app.markdown)
+    assert "Cap tier <b>20.0%</b>" in " ".join(m.value for m in app.markdown)
     app.selectbox(key="preset_name").set_value("West Africa Cocoa Spike (+30% CC, +5% Others)").run()
     app.button(key="apply_preset_btn").click().run()
     assert len(app.exception) == 0
@@ -213,7 +215,8 @@ def test_app_monte_carlo_controls(app):
     app.session_state["mc_sims"] = 1000
     app.run()
     assert len(app.exception) == 0
-    assert "10-Day LaR (95%)" in " ".join(m.value for m in app.markdown)
+    assert "LaR 95% · 10-day" in " ".join(m.value for m in app.markdown)
+    assert "1,000 paths, 10-day" in " ".join(m.value for m in app.markdown)
 
 
 def test_app_per_commodity_override_runs(app):

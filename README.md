@@ -23,7 +23,7 @@ below the drawn balance and the lender can require a deficiency paydown.
 
 ```
 core/   pure Python models (no Streamlit or Plotly imports, enforced by tests)
-ui/     Plotly charts, Streamlit components, theme, cache wrappers
+ui/     design system (theme.py), Plotly charts, Streamlit components, cache wrappers
 app.py  Streamlit entry point
 data/   bundled price history used offline and as the live-feed fallback
 tests/  pytest suite, including Streamlit AppTest end-to-end runs
@@ -31,14 +31,14 @@ tests/  pytest suite, including Streamlit AppTest end-to-end runs
 
 | Module | What it answers | Logic in plain terms |
 | --- | --- | --- |
-| **Overview** | Is the facility healthy right now? | Borrowing base, headroom, availability usage gauge, collateral mix, active stress result and a short briefing built from the live numbers. |
-| **Borrowing Base Certificate** | What can we borrow today? | Eligible inventory plus eligible receivables, bridged step by step from gross values, with CSV and JSON certificate export. |
-| **Inventory & Haircuts** | Why is each advance rate what it is? | Haircut = base rate + volatility add-on above a reference vol + penalty for the unhedged share, clamped to 10% to 65%. |
-| **Receivables & Caps** | How much does buyer concentration cost? | Receivables over 90 days past due are excluded; investment-grade buyers advance at 85%, others at 75%. No single buyer may exceed a cap percentage of the borrowing base, which is solved as a fixed point because the cap depends on the base it helps set. |
-| **Stress Sweep** | At what price move do we run out of cash? | Parallel shocks from -20% to +20% in 1% steps. Net liquidity buffer = cash + headroom + margin inflows, minus margin calls, initial margin step-up and deficiency cure. Breakevens are interpolated between grid points. |
-| **Scenario Heatmap** | Which mixed moves are dangerous? | Metals (Gold, Copper) and softs/lumber (Lumber, Cocoa) shocked independently on a 17 x 17 grid, with the zero-buffer contour drawn. |
+| **Overview** | Is the facility healthy right now? | Net liquidity buffer across parallel shocks with regime shading, a treasury briefing built from the current numbers, and the eligible collateral mix. A verdict row above all tabs shows the active-stress buffer, headroom, availability used, LaR 95% and the squeeze breakeven. |
+| **Borrowing base** | What can we borrow today? | Eligible inventory plus eligible receivables, bridged step by step from gross values, with CSV and JSON certificate export. |
+| **Inventory** | Why is each advance rate what it is? | Haircut = base rate + volatility add-on above a reference vol + penalty for the unhedged share, clamped to 10% to 65%. |
+| **Receivables** | How much does buyer concentration cost? | Receivables over 90 days past due are excluded; investment-grade buyers advance at 85%, others at 75%. No single buyer may exceed a cap percentage of the borrowing base, which is solved as a fixed point because the cap depends on the base it helps set. |
+| **Stress sweep** | At what price move do we run out of cash? | Parallel shocks from -20% to +20% in 1% steps. Net liquidity buffer = cash + headroom + margin inflows, minus margin calls, initial margin step-up and deficiency cure. Breakevens are interpolated between grid points. |
+| **Scenario heatmap** | Which mixed moves are dangerous? | Metals (Gold, Copper) and softs/lumber (Lumber, Cocoa) shocked independently on a 17 x 17 grid, with the zero-buffer contour drawn. |
 | **Monte Carlo LaR** | How bad is a bad week? | Thousands of correlated price paths over 1, 5, 10 or 20 trading days, drawn from the recent return covariance via Cholesky decomposition. Reports LaR 95% and 99% (5th and 1st percentile buffer), expected shortfall and regime probabilities. |
-| **Historical Replay** | How would today's book have fared last year? | Today's positions, receivables and drawn balance run through each past trading day's prices and 30-day volatility: borrowing base, daily futures margin and a 5-day stressed buffer. |
+| **Historical replay** | How would today's book have fared last year? | Today's positions, receivables and drawn balance run through each past trading day's prices and 30-day volatility: borrowing base, daily futures margin and a 5-day stressed buffer. |
 
 **Key assumptions**
 

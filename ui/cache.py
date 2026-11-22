@@ -115,11 +115,14 @@ def cached_monte_carlo(
 
 
 def market_data_status(market: MarketLoadResult) -> tuple[str, str]:
-    """Short status label and tone for the active market data source."""
+    """Short label and semantic state (ui.theme.STATUS key) for the active market data source.
+
+    Only the live-feed fallback is flagged as a caution; every other source is neutral.
+    """
     if market.used_fallback:
-        return "Bundled data (live feed unavailable)", "amber"
+        return "Bundled data (live feed unavailable)", "caution"
     if market.source_label.startswith("Live"):
-        return "Live market data", "emerald"
+        return "Live market data", "neutral"
     if market.source_label.startswith("Custom"):
-        return "Uploaded CSV data", "violet"
-    return "Bundled sample data", "blue"
+        return "Uploaded CSV data", "neutral"
+    return "Bundled sample data", "neutral"

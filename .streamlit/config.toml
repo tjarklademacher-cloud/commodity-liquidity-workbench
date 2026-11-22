@@ -1,10 +1,28 @@
+# Visual tokens mirror ui/theme.py (COLORS, FONT_SANS, FONT_MONO). Change both together.
 [theme]
-base = "dark"
-primaryColor = "#38BDF8"
-backgroundColor = "#0B1120"
-secondaryBackgroundColor = "#111827"
-textColor = "#F1F5F9"
-font = "sans serif"
+base = "light"
+primaryColor = "#1B4965"
+backgroundColor = "#F6F7F9"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#0F172A"
+linkColor = "#2C6E91"
+borderColor = "#E2E6EC"
+dataframeBorderColor = "#E2E6EC"
+dataframeHeaderBackgroundColor = "#F0F2F5"
+showWidgetBorder = true
+baseRadius = "6px"
+buttonRadius = "4px"
+baseFontSize = 14
+font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap, sans-serif"
+codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap, monospace"
+headingFontWeights = 600
+headingFontSizes = ["1.375rem", "1.125rem", "1rem", "0.9375rem", "0.875rem", "0.8125rem"]
+chartCategoricalColors = ["#9B8018", "#AA5C35", "#386A52", "#6D4A3C", "#1B4965", "#64748B"]
+
+[theme.sidebar]
+backgroundColor = "#F0F2F5"
+secondaryBackgroundColor = "#FFFFFF"
+borderColor = "#E2E6EC"
 
 [server]
 headless = true

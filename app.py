@@ -1,4 +1,4 @@
-"""Commodity Collateral, Borrowing Base & Liquidity Stress Workbench: Streamlit entry point."""
+"""Commodity Liquidity Workbench: Streamlit entry point (presentation only; models live in core/)."""
 
 from __future__ import annotations
 
@@ -31,13 +31,11 @@ from ui.cache import (
 from ui.charts import (
     build_active_shock_sources_uses_chart,
     build_borrowing_base_waterfall,
-    build_collateral_mix_donut,
+    build_buffer_profile_chart,
     build_correlation_heatmap,
-    build_facility_gauge,
     build_haircut_decomposition_chart,
     build_mc_distribution_chart,
     build_receivables_concentration_chart,
-    build_regime_ribbon,
     build_replay_chart,
     build_shock_heatmap,
     build_stress_sweep_chart,
@@ -45,28 +43,32 @@ from ui.charts import (
 )
 from ui.components import (
     certificate_download_buttons,
-    covenant_audit_card,
+    covenant_audit_rows,
     default_inventory_df,
     default_receivables_df,
     haircut_methodology_expander,
-    methodology_expander,
     inventory_editor,
+    methodology_expander,
+    provenance_note,
     receivables_editor,
-    render_hero,
-    render_insights,
-    render_kpi_cards,
-    render_regime_banner,
+    render_audit_rows,
+    render_briefing,
+    render_header,
+    render_kpi_row,
+    render_verdict,
     section_head,
-    solver_audit_card,
+    solver_audit_rows,
     stress_methodology_expander,
 )
 from ui.theme import (
     PLOTLY_CONFIG,
-    REGIME_TONES,
+    bridge_label,
     fmt_millions,
     fmt_pct,
     fmt_signed_millions,
     inject_custom_css,
+    regime_label,
+    regime_status,
 )
 
 FEED_SAMPLE = "Calibrated Sample (Offline)"
@@ -135,70 +137,28 @@ def apply_preset() -> None:
     ss.editor_nonce += 1
 
 
-def side_section(number: int, title: str) -> None:
-    st.sidebar.markdown(
-        f'<div class="side-section"><span class="num">{number}</span>{title}</div>', unsafe_allow_html=True
-    )
+FEED_LABELS = {FEED_SAMPLE: "Bundled sample", FEED_LIVE: "Live (Yahoo Finance)", FEED_UPLOAD: "Upload CSV"}
 
 
-def sidebar_brand() -> None:
-    st.sidebar.markdown(
-        '<div class="side-brand"><div class="logo">ABL</div><div><div class="name">Liquidity Desk</div>'
-        '<div class="tag">Collateral · Margin · Treasury</div></div></div>',
-        unsafe_allow_html=True,
-    )
-
-
-def sidebar_market_feed() -> MarketLoadResult:
-    side_section(1, "Market Data Feed")
-    mode = st.sidebar.radio("Price source", [FEED_SAMPLE, FEED_LIVE, FEED_UPLOAD], key="feed_mode")
-    winsorize = st.sidebar.checkbox("5-Sigma Roll-Jump Winsorization", key="winsorize")
-    market: MarketLoadResult
-    if mode == FEED_LIVE:
-        with st.spinner("Fetching front-month futures from Yahoo Finance"):
-            market = cached_live_market("1y", winsorize)
-    elif mode == FEED_UPLOAD:
-        uploaded = st.sidebar.file_uploader("Price CSV (Date, GC=F, HG=F, LBR=F, CC=F)", type=["csv"])
-        template = pd.read_csv(DEFAULT_SAMPLE_CSV_PATH).tail(60).to_csv(index=False)
-        st.sidebar.download_button(
-            "Download CSV Template", data=template, file_name="price_template.csv",
-            mime="text/csv", width="stretch", key="dl_template",
-        )
-        sample = cached_sample_market(winsorize)
-        if uploaded is None:
-            market = sample.model_copy(update={"status_message": "No file uploaded yet; showing calibrated sample."})
-        else:
-            try:
-                market = cached_custom_market(uploaded.getvalue(), winsorize)
-            except (ValueError, KeyError, pd.errors.ParserError) as exc:
-                market = sample.model_copy(
-                    update={
-                        "used_fallback": True,
-                        "source_label": "Calibrated Sample (Upload Fallback)",
-                        "status_message": f"Uploaded CSV rejected ({exc}). Using calibrated sample.",
-                    }
-                )
-    else:
-        market = cached_sample_market(winsorize)
-    if market.used_fallback:
-        st.sidebar.warning(market.status_message)
-    else:
-        st.sidebar.caption(f"**{market.source_label}** · as of {market.as_of_date}. {market.status_message}")
-    return market
+def side_section(title: str, first: bool = False) -> None:
+    css = "side-section first" if first else "side-section"
+    st.sidebar.markdown(f'<div class="{css}">{title}</div>', unsafe_allow_html=True)
 
 
 def sidebar_facility_terms() -> FacilityTerms:
-    side_section(2, "Facility & Liquidity Terms")
-    st.sidebar.number_input("Facility Limit ($M)", min_value=1.0, step=1.0, format="%.1f", key="facility_limit_m")
-    st.sidebar.number_input("Drawn Revolver ($M)", min_value=0.0, step=1.0, format="%.1f", key="drawn_revolver_m")
-    st.sidebar.number_input("Unrestricted Cash ($M)", min_value=0.0, step=0.5, format="%.1f", key="unrestricted_cash_m")
-    st.sidebar.number_input("Baseline Initial Margin ($M)", min_value=0.0, step=0.1, format="%.1f", key="baseline_im_m")
+    side_section("Portfolio and facility", first=True)
+    st.sidebar.number_input("Facility limit (USD M)", min_value=1.0, step=1.0, format="%.1f", key="facility_limit_m")
+    st.sidebar.number_input("Drawn balance (USD M)", min_value=0.0, step=1.0, format="%.1f", key="drawn_revolver_m")
+    st.sidebar.number_input("Unrestricted cash (USD M)", min_value=0.0, step=0.5, format="%.1f",
+                            key="unrestricted_cash_m")
+    st.sidebar.number_input("Baseline initial margin (USD M)", min_value=0.0, step=0.1, format="%.1f",
+                            key="baseline_im_m")
     st.sidebar.radio(
-        "Single-Buyer Cap Tier", [round(c * 100, 1) for c in CAP_TIER_OPTIONS], key="cap_tier",
+        "Single-buyer cap (% of borrowing base)", [round(c * 100, 1) for c in CAP_TIER_OPTIONS], key="cap_tier",
         format_func=lambda v: f"{v:.1f}%", horizontal=True,
     )
-    st.sidebar.slider("IM Step-Up Trigger (%)", 5, 20, step=1, key="im_trigger_pct")
-    st.sidebar.slider("IM Step-Up Add-On (%)", 0, 50, step=1, key="im_addon_pct")
+    st.sidebar.slider("IM step-up trigger (largest move, %)", 5, 20, step=1, key="im_trigger_pct")
+    st.sidebar.slider("IM step-up size (% of baseline IM)", 0, 50, step=1, key="im_addon_pct")
     ss = st.session_state
     payload = {
         "facility_limit": float(ss["facility_limit_m"]) * 1e6,
@@ -216,100 +176,129 @@ def sidebar_facility_terms() -> FacilityTerms:
         return DEFAULT_FACILITY_TERMS
 
 
+def sidebar_market_feed() -> MarketLoadResult:
+    side_section("Market data")
+    mode = st.sidebar.radio("Price source", [FEED_SAMPLE, FEED_LIVE, FEED_UPLOAD], key="feed_mode",
+                            format_func=lambda v: FEED_LABELS[v])
+    winsorize = st.sidebar.checkbox("Winsorize daily returns at 5 sigma", key="winsorize",
+                                    help="Caps futures roll gaps before computing 30-day volatility.")
+    market: MarketLoadResult
+    if mode == FEED_LIVE:
+        with st.spinner("Loading front-month futures from Yahoo Finance"):
+            market = cached_live_market("1y", winsorize)
+    elif mode == FEED_UPLOAD:
+        uploaded = st.sidebar.file_uploader("Price CSV (Date, GC=F, HG=F, LBR=F, CC=F)", type=["csv"])
+        template = pd.read_csv(DEFAULT_SAMPLE_CSV_PATH).tail(60).to_csv(index=False)
+        st.sidebar.download_button(
+            "Download CSV template", data=template, file_name="price_template.csv",
+            mime="text/csv", width="stretch", key="dl_template",
+        )
+        sample = cached_sample_market(winsorize)
+        if uploaded is None:
+            market = sample.model_copy(update={"status_message": "No file uploaded yet; showing the bundled sample."})
+        else:
+            try:
+                market = cached_custom_market(uploaded.getvalue(), winsorize)
+            except (ValueError, KeyError, pd.errors.ParserError) as exc:
+                market = sample.model_copy(
+                    update={
+                        "used_fallback": True,
+                        "source_label": "Calibrated Sample (Upload Fallback)",
+                        "status_message": f"Uploaded CSV rejected ({exc}). Using the bundled sample.",
+                    }
+                )
+    else:
+        market = cached_sample_market(winsorize)
+    st.sidebar.caption(market.status_message)
+    return market
+
+
 def sidebar_shock_controls() -> tuple[float, dict[str, float] | None]:
-    side_section(3, "Stress Shock Controls")
-    st.sidebar.slider("Parallel Price Shock (%)", -20, 20, step=1, key="parallel_shock")
-    st.sidebar.selectbox("Scenario Preset", PRESET_NAMES, key="preset_name")
-    st.sidebar.button("Apply Preset", width="stretch", on_click=apply_preset, key="apply_preset_btn")
-    override = st.sidebar.checkbox("Enable Per-Commodity Shock Overrides", key="override_enabled")
+    side_section("Stress scenario")
+    st.sidebar.slider("Parallel price shock (%)", -20, 20, step=1, key="parallel_shock")
+    st.sidebar.selectbox("Scenario preset", PRESET_NAMES, key="preset_name")
+    st.sidebar.button("Apply preset", width="stretch", on_click=apply_preset, key="apply_preset_btn")
+    override = st.sidebar.checkbox("Set shocks per commodity", key="override_enabled")
     parallel = st.session_state["parallel_shock"] / 100.0
     if not override:
         return parallel, None
     per: dict[str, float] = {}
     for t in REQUIRED_TICKERS:
-        st.sidebar.slider(f"{COMMODITY_SPECS[t].name} ({t}) Shock (%)", -30, 30, step=1, key=f"shock_{t}")
+        st.sidebar.slider(f"{COMMODITY_SPECS[t].name} shock (%)", -30, 30, step=1, key=f"shock_{t}")
         per[t] = st.session_state[f"shock_{t}"] / 100.0
     return parallel, per
 
 
+def sidebar_simulation() -> tuple[int, int]:
+    side_section("Simulation")
+    st.sidebar.segmented_control("Monte Carlo horizon (trading days)", MC_HORIZONS, key="mc_horizon",
+                                 format_func=lambda d: f"{d}d")
+    st.sidebar.select_slider("Monte Carlo paths", MC_SIM_OPTIONS, key="mc_sims", format_func=lambda n: f"{n:,}")
+    ss = st.session_state
+    return int(ss.get("mc_horizon") or 5), int(ss.get("mc_sims") or 5000)
+
+
 def sidebar_reset() -> None:
-    side_section(4, "Reset")
-    st.sidebar.button(
-        "Reset All to Calibrated Defaults", width="stretch", on_click=reset_to_defaults, key="reset_btn"
-    )
+    side_section("Reset")
+    st.sidebar.button("Reset all inputs to defaults", width="stretch", on_click=reset_to_defaults, key="reset_btn")
 
 
+def panel(key: str):
+    """White analytical surface (styled via the stable st-key-panel_* class)."""
+    return st.container(key=f"panel_{key}")
 
-def chart(fig, key: str) -> None:
-    with st.container(border=True):
+
+def chart(fig, key: str, title: str = "", subtitle: str = "") -> None:
+    with panel(key):
+        if title:
+            section_head(title, subtitle)
         st.plotly_chart(fig, width="stretch", theme=None, config=PLOTLY_CONFIG, key=key)
 
 
-def _regime_label(regime) -> str:
-    return str(regime).replace("_", " ")
+def _money_column(label: str) -> st.column_config.NumberColumn:
+    """USD millions with two decimals; the unit sits in the header so negatives read as -1.22."""
+    return st.column_config.NumberColumn(f"{label} (USD M)", format="%.2f")
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="Commodity Collateral & Liquidity Stress Workbench",
-        page_icon="📊",
+        page_title="Commodity Liquidity Workbench",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="auto",
     )
     inject_custom_css()
     init_session_state()
 
-    sidebar_brand()
-    market = sidebar_market_feed()
     terms = sidebar_facility_terms()
+    market = sidebar_market_feed()
     parallel_shock, per_commodity = sidebar_shock_controls()
+    horizon, n_sims = sidebar_simulation()
     sidebar_reset()
     is_custom = per_commodity is not None
     ss = st.session_state
 
     header = st.container()
     (tab_overview, tab_cert, tab_inv, tab_ar, tab_stress, tab_heat, tab_mc, tab_replay) = st.tabs(
-        [
-            ":material/dashboard: Overview",
-            ":material/receipt_long: BB Certificate",
-            ":material/inventory_2: Inventory",
-            ":material/account_balance: Receivables",
-            ":material/bolt: Stress Sweep",
-            ":material/grid_on: Heatmap",
-            ":material/ssid_chart: Monte Carlo LaR",
-            ":material/history: Replay",
-        ]
+        ["Overview", "Borrowing base", "Inventory", "Receivables", "Stress sweep", "Scenario heatmap",
+         "Monte Carlo LaR", "Historical replay"]
     )
     nonce = ss.editor_nonce
 
     with tab_inv:
-        section_head("Physical Inventory & Hedge Book",
-                     "Edit Physical Qty and Hedged Qty; calculated columns and every downstream view update instantly.")
+        section_head("Physical inventory and hedge book",
+                     "Edit physical and hedged quantities. Calculated columns and every other view update on edit.")
         positions, inv_errors, inv_edited = inventory_editor(ss["inventory_df"], market.snapshot, nonce)
         ss["inventory_edited_df"] = inv_edited
         for msg in inv_errors:
             st.warning(msg)
 
     with tab_ar:
-        section_head("Trade Receivables Ledger",
-                     "Edit, add or delete buyer exposures. Rows failing validation are excluded and reported.")
+        section_head("Trade receivables ledger",
+                     "Edit, add or delete buyer exposures. Rows that fail validation are excluded and listed below.")
         receivables, ar_errors, ar_edited = receivables_editor(ss["receivables_df"], nonce)
         ss["receivables_edited_df"] = ar_edited
         for msg in ar_errors:
             st.warning(msg)
-
-    with tab_mc:
-        section_head("Monte Carlo Liquidity-at-Risk",
-                     "Correlated lognormal price moves drawn from the historical covariance (Cholesky), "
-                     "each revalued through the full borrowing base and margin engine.")
-        c_h, c_n = st.columns([1, 2])
-        with c_h:
-            st.segmented_control("Horizon (trading days)", MC_HORIZONS, key="mc_horizon",
-                                 format_func=lambda d: f"{d}d")
-        with c_n:
-            st.select_slider("Simulated paths", MC_SIM_OPTIONS, key="mc_sims", format_func=lambda n: f"{n:,}")
-    horizon = int(ss.get("mc_horizon") or 5)
-    n_sims = int(ss.get("mc_sims") or 5000)
 
     items = compute_portfolio_inventory(positions, market.snapshot)
     bb = calculate_borrowing_base(items, receivables, terms)
@@ -325,270 +314,338 @@ def main() -> None:
     ss["active_regime"] = str(stress.regime)
 
     if is_custom:
-        mode_label = "Per-commodity: " + ", ".join(f"{t} {v:+.0%}" for t, v in per_commodity.items())
+        scenario = "Per commodity " + ", ".join(
+            f"{COMMODITY_SPECS[t].name} {v:+.0%}" for t, v in per_commodity.items()
+        )
         same_metals = per_commodity["GC=F"] == per_commodity["HG=F"]
         same_softs = per_commodity["LBR=F"] == per_commodity["CC=F"]
         active_point = (per_commodity["GC=F"], per_commodity["LBR=F"]) if same_metals and same_softs else None
     else:
-        mode_label = f"Parallel shock {parallel_shock:+.0%}"
+        scenario = f"Parallel {parallel_shock:+.0%}"
         active_point = (parallel_shock, parallel_shock)
 
-    with header:
-        render_hero(market, terms, mode_label, *market_data_status(market))
-        render_regime_banner(stress, mode_label)
-        methodology_expander()
-
-    regime_tone = REGIME_TONES[stress.regime]
+    baseline_point = next((p for p in sweep.points if p.shock_pct == 0.0), None)
     availability = min(terms.facility_limit, bb.final_borrowing_base)
-    usage = terms.drawn_revolver / availability if availability > 0 else 1.0
-    usage_tone = "emerald" if usage < 0.85 else ("amber" if usage < 0.95 else "red")
+    usage = terms.drawn_revolver / availability if availability > 0 else float("inf")
     be_up = sweep.upside_squeeze_breakeven_pct
     be_down = sweep.downside_deficiency_breakeven_pct
-    replay_bb = replay.frame["borrowing_base"].tail(60).tolist() if replay is not None else None
-    replay_hr = replay.frame["headroom"].tail(60).tolist() if replay is not None else None
+    status = regime_status(stress.regime)
+
+    with header:
+        render_header(
+            [
+                ("Scenario", scenario),
+                ("Cap tier", f"{terms.concentration_cap_pct:.1%}"),
+                ("Monte Carlo", f"{n_sims:,} paths, {horizon}-day"),
+                ("Commodities", str(len(positions))),
+                ("Prices as of", market.as_of_date),
+            ],
+            market_data_status(market),
+        )
+        baseline_text = (f"No-shock baseline {fmt_signed_millions(baseline_point.net_liquidity_buffer)}."
+                         if baseline_point is not None else "")
+        render_verdict(
+            {
+                "label": "Net liquidity buffer under active stress",
+                "value": fmt_signed_millions(stress.net_liquidity_buffer),
+                "status": status, "status_text": regime_label(stress.regime),
+                "context": f"{stress.regime_explanation} {baseline_text}",
+            },
+            [
+                {
+                    "label": "Revolver headroom",
+                    "value": fmt_millions(bb.available_headroom),
+                    "context": f"Base {fmt_millions(bb.final_borrowing_base)}, limit "
+                               f"{fmt_millions(terms.facility_limit)}, drawn {fmt_millions(terms.drawn_revolver)}",
+                    "status": "breach" if bb.final_borrowing_base < terms.drawn_revolver else None,
+                    "status_text": "Deficiency",
+                },
+                {
+                    "label": "Availability used",
+                    "value": fmt_pct(usage, 1),
+                    "context": f"Drawn {fmt_millions(terms.drawn_revolver)} of {fmt_millions(availability)} "
+                               "available (lower of base and limit)",
+                    "status": "breach" if usage > 1.0 else None, "status_text": "Over availability",
+                },
+                {
+                    "label": f"LaR 95% · {mc.horizon_days}-day",
+                    "value": fmt_signed_millions(mc.p05_net_buffer),
+                    "context": f"5th percentile buffer over {mc.n_sims:,} paths. "
+                               f"P(critical squeeze) {fmt_pct(mc.prob_critical, 1)}",
+                    "status": "breach" if mc.p05_net_buffer < 0 else None, "status_text": "Below zero",
+                },
+                {
+                    "label": "Squeeze breakeven",
+                    "value": fmt_pct(be_up) if be_up is not None else "None to +20%",
+                    "context": "Parallel rally at which the buffer reaches zero. Deficiency breakeven "
+                               + (fmt_pct(be_down) if be_down is not None else "none to -20%"),
+                },
+            ],
+        )
+        methodology_expander()
 
     with tab_overview:
-        render_kpi_cards(
-            [
-                {"label": "Final Borrowing Base", "value": fmt_millions(bb.final_borrowing_base), "tone": "blue",
-                 "sub": f"Inventory {fmt_millions(bb.eligible_inventory)} + AR {fmt_millions(bb.final_eligible_receivables)}",
-                 "spark": replay_bb},
-                {"label": "Available Headroom", "value": fmt_millions(bb.available_headroom),
-                 "tone": "emerald" if bb.available_headroom > 0 else "red",
-                 "sub": f"Limit {fmt_millions(terms.facility_limit)} · drawn {fmt_millions(terms.drawn_revolver)}",
-                 "spark": replay_hr},
-                {"label": "Availability Usage", "value": fmt_pct(usage, 1), "tone": usage_tone,
-                 "sub": f"Coverage {bb.collateral_coverage_ratio:.2f}x drawn",
-                 "chip": "TIGHT" if usage >= 0.95 else ("WATCH" if usage >= 0.85 else "COMFORTABLE")},
-                {"label": "Active Stress Net Buffer", "value": fmt_signed_millions(stress.net_liquidity_buffer),
-                 "tone": regime_tone, "chip": _regime_label(stress.regime), "sub": mode_label,
-                 "spark": [p.net_liquidity_buffer for p in sweep.points]},
-                {"label": f"{mc.horizon_days}-Day LaR (95%)", "value": fmt_signed_millions(mc.p05_net_buffer),
-                 "tone": "violet" if mc.p05_net_buffer >= 0 else "red",
-                 "sub": f"P(squeeze) {fmt_pct(mc.prob_critical, 1)} · P(trap) {fmt_pct(mc.prob_margin_trap, 1)}"},
-                {"label": "Squeeze Breakeven", "value": fmt_pct(be_up) if be_up is not None else "None ≤ +20%",
-                 "tone": "amber",
-                 "sub": f"Deficiency at {fmt_pct(be_down) if be_down is not None else 'none ≥ −20%'}"},
-            ]
-        )
-        col_g, col_d = st.columns(2)
-        with col_g:
-            chart(build_facility_gauge(bb), "chart_gauge")
-        with col_d:
-            chart(build_collateral_mix_donut(bb), "chart_mix")
-        insights = [(regime_tone, f"<b>{_regime_label(stress.regime)}</b>: {stress.regime_explanation}")]
-        cap_point = next((p for p in sweep.points if p.shock_pct > 0 and p.shocked_bb >= terms.facility_limit), None)
-        if cap_point is not None:
-            insights.append(("amber", f"Headroom <b>caps out at {cap_point.shock_pct:+.0%}</b>: above it the "
-                                      "borrowing base exceeds the facility limit, so rallies add VM calls but no "
-                                      "new availability."))
-        if bb.capped_buyer_names:
-            tier_gain = tiers[-1].final_borrowing_base - bb.final_borrowing_base
-            insights.append(("blue", f"<b>{len(bb.capped_buyer_names)} buyer(s) capped</b> "
-                                     f"({fmt_millions(bb.concentration_cutback_dollars)} cutback); the "
-                                     f"{tiers[-1].cap_pct:.1%} tier would add {fmt_millions(tier_gain)} of BB."))
-        insights.append(("violet", f"<b>{mc.horizon_days}-day LaR 95%</b> of {fmt_signed_millions(mc.p05_net_buffer)}; "
-                                   f"{fmt_pct(mc.prob_critical, 1)} of {mc.n_sims:,} correlated paths end in a squeeze."))
-        insights.append(("red", f"<b>{fmt_pct(grid.squeeze_share, 0)}</b> of mixed metals/softs scenarios are "
-                                f"CRITICAL; worst at metals {grid.worst_metals_shock:+.0%} / softs "
-                                f"{grid.worst_softs_shock:+.0%} ({fmt_signed_millions(grid.worst_net_buffer)})."))
-        if replay is not None:
-            insights.append(("orange", f"Replay since {replay.start_date}: BB below drawn on "
-                                       f"<b>{replay.deficiency_days} of {replay.n_days} days</b>; worst 5-day VM call "
-                                       f"{fmt_millions(replay.max_5d_vm_outflow)}."))
-        render_insights("Treasury Briefing", insights)
-        chart(build_regime_ribbon(sweep, None if is_custom else parallel_shock), "chart_ribbon")
+        col_main, col_side = st.columns([2.1, 1], gap="medium")
+        with col_main:
+            chart(build_buffer_profile_chart(sweep, None if is_custom else parallel_shock), "chart_profile",
+                  "Net liquidity buffer across parallel price shocks",
+                  "Uniform shock to all four commodities. Shading: green healthy, amber margin trap or BB "
+                  "deficiency, red critical squeeze.")
+        with col_side:
+            with panel("briefing"):
+                section_head("Treasury briefing", "Derived from the current inputs.")
+                findings = [(status, f"<b>{regime_label(stress.regime)}</b> at {scenario.lower()}: "
+                                     f"{stress.regime_explanation}")]
+                cap_point = next(
+                    (p for p in sweep.points if p.shock_pct > 0 and p.shocked_bb >= terms.facility_limit), None
+                )
+                if cap_point is not None:
+                    findings.append(("neutral", f"Headroom <b>caps out at {cap_point.shock_pct:+.0%}</b>. Above it "
+                                                "the base exceeds the facility limit, so rallies add margin calls "
+                                                "but no new availability."))
+                if bb.capped_buyer_names:
+                    tier_gain = tiers[-1].final_borrowing_base - bb.final_borrowing_base
+                    findings.append(("neutral", f"<b>{len(bb.capped_buyer_names)} buyer(s) capped</b>, "
+                                                f"{fmt_millions(bb.concentration_cutback_dollars)} cut back. The "
+                                                f"{tiers[-1].cap_pct:.1%} tier would add {fmt_millions(tier_gain)}."))
+                findings.append(("breach" if grid.squeeze_share > 0 else "neutral",
+                                 f"<b>{fmt_pct(grid.squeeze_share, 0)}</b> of mixed metals/softs grid scenarios "
+                                 f"end in a critical squeeze. Worst: metals {grid.worst_metals_shock:+.0%}, softs "
+                                 f"{grid.worst_softs_shock:+.0%} ({fmt_signed_millions(grid.worst_net_buffer)})."))
+                if replay is not None:
+                    findings.append(("caution" if replay.deficiency_days else "neutral",
+                                     f"Replay: base below drawn on <b>{replay.deficiency_days} of {replay.n_days} "
+                                     f"days</b>. Worst 5-day margin call {fmt_millions(replay.max_5d_vm_outflow)}."))
+                render_briefing(findings)
+            with panel("mix"):
+                section_head("Eligible collateral", f"Total {fmt_millions(bb.final_borrowing_base)}")
+                mix = pd.DataFrame(
+                    [{"Component": i.name, "Eligible": i.eligible_collateral / 1e6,
+                      "Share": i.eligible_collateral / bb.final_borrowing_base * 100 if bb.final_borrowing_base else 0.0}
+                     for i in bb.inventory_items]
+                    + [{"Component": "Receivables (after cap)", "Eligible": bb.final_eligible_receivables / 1e6,
+                        "Share": bb.final_eligible_receivables / bb.final_borrowing_base * 100
+                        if bb.final_borrowing_base else 0.0}]
+                )
+                st.dataframe(mix, width="stretch", hide_index=True,
+                             column_config={"Eligible": _money_column("Eligible"),
+                                            "Share": st.column_config.NumberColumn("Share", format="%.1f%%")})
 
     with tab_cert:
-        render_kpi_cards(
-            [
-                {"label": "Final Borrowing Base", "value": fmt_millions(bb.final_borrowing_base), "tone": "blue",
-                 "sub": "Eligible inventory + capped eligible AR"},
-                {"label": "Facility Limit", "value": fmt_millions(terms.facility_limit), "tone": "slate",
-                 "sub": f"Drawn {fmt_millions(terms.drawn_revolver)}"},
-                {"label": "Available Headroom", "value": fmt_millions(bb.available_headroom),
-                 "tone": "emerald" if bb.available_headroom > 0 else "red",
-                 "sub": "max(0, min(limit, BB) − drawn)"},
-                {"label": "Revolver Utilization", "value": fmt_pct(bb.facility_utilization_pct), "tone": usage_tone,
-                 "sub": "Drawn ÷ facility limit"},
-                {"label": "Active Stress Net Buffer", "value": fmt_signed_millions(stress.net_liquidity_buffer),
-                 "tone": regime_tone, "chip": _regime_label(stress.regime)},
-            ]
-        )
-        chart(build_borrowing_base_waterfall(bb), "chart_waterfall")
-        col_table, col_audit = st.columns([3, 2])
-        with col_table:
-            section_head("Borrowing Base Reconciliation", "Every bridge step reconciles to the final base within $1e-6.")
+        col_main, col_side = st.columns([1.8, 1], gap="medium")
+        with col_main:
+            chart(build_borrowing_base_waterfall(bb), "chart_waterfall", "Borrowing base bridge",
+                  "From gross collateral to the certified base. Dashed: facility limit. Dotted: drawn balance.")
+        with col_side:
+            with panel("covenant"):
+                section_head("Covenant position")
+                covenant_audit_rows(bb)
+                st.write("")
+                certificate_download_buttons(bb, stress, market)
+        with panel("recon"):
+            section_head("Reconciliation ledger", "Each step reconciles to the final base within $0.000001.")
+            kinds = {"absolute": "Gross", "relative": "Adjustment", "total": "Subtotal"}
             recon = pd.DataFrame(
-                [{"Line": w.label, "Amount ($M)": w.amount / 1e6, "Running Total ($M)": w.running_total / 1e6}
-                 for w in bb.waterfall]
+                [{"Line": bridge_label(w.label), "Type": "Total" if i == len(bb.waterfall) - 1 else kinds[w.measure],
+                  "Amount (USD M)": w.amount / 1e6, "Running total (USD M)": w.running_total / 1e6}
+                 for i, w in enumerate(bb.waterfall)]
             )
-            st.dataframe(
-                recon, width="stretch", hide_index=True,
-                column_config={
-                    "Amount ($M)": st.column_config.NumberColumn(format="%.2f"),
-                    "Running Total ($M)": st.column_config.NumberColumn(format="%.2f"),
-                },
-            )
-        with col_audit:
-            covenant_audit_card(bb)
-            st.write("")
-            certificate_download_buttons(bb, stress, market)
+            styled = recon.style.apply(
+                lambda r: ["font-weight: 600" if r["Type"] in ("Subtotal", "Total") else "" for _ in r], axis=1
+            ).format({"Amount (USD M)": "{:,.2f}", "Running total (USD M)": "{:,.2f}"})
+            st.dataframe(styled, width="stretch", hide_index=True)
 
     with tab_inv:
-        col_hc, col_vol = st.columns(2)
+        col_hc, col_vol = st.columns([1.15, 1], gap="medium")
         with col_hc:
-            chart(build_haircut_decomposition_chart(bb.inventory_items), "chart_haircuts")
+            chart(build_haircut_decomposition_chart(bb.inventory_items), "chart_haircuts",
+                  "Advance rate and haircut components", "Share of gross market value per commodity.")
         with col_vol:
-            chart(build_volatility_history_chart(market.vol_df, COMMODITY_SPECS), "chart_vol")
+            chart(build_volatility_history_chart(market.vol_df, COMMODITY_SPECS), "chart_vol",
+                  "30-day realized volatility",
+                  "Annualized. Dotted: haircut reference volatility ("
+                  + ", ".join(f"{s.name} {s.ref_vol:.0%}" for s in COMMODITY_SPECS.values()) + ").")
         haircut_methodology_expander()
 
     with tab_ar:
-        col_chart, col_side = st.columns([3, 2])
+        col_chart, col_side = st.columns([2.1, 1], gap="medium")
         with col_chart:
-            chart(build_receivables_concentration_chart(bb), "chart_ar")
+            chart(build_receivables_concentration_chart(bb), "chart_ar", "Concentration by buyer",
+                  "Eligible receivables before and after the single-buyer cap. Amber bars are capped.")
         with col_side:
-            section_head("Concentration Cap Tier Sensitivity", "Borrowing base re-solved under each cap tier.")
-            tier_df = pd.DataFrame(
-                [
-                    {
-                        "Tier": f"{t.cap_pct:.1%}",
-                        "BB ($M)": t.final_borrowing_base / 1e6,
-                        "Cutback ($M)": t.total_cutback_dollars / 1e6,
-                        "Capped": t.capped_buyer_count,
-                    }
-                    for t in tiers
-                ]
-            )
-            st.dataframe(
-                tier_df, width="stretch", hide_index=True,
-                column_config={c: st.column_config.NumberColumn(format="%.2f") for c in ["BB ($M)", "Cutback ($M)"]},
-            )
-            solver_audit_card(bb)
+            with panel("tiers"):
+                section_head("Cap tier sensitivity", "Borrowing base re-solved at each cap tier.")
+                tier_df = pd.DataFrame(
+                    [{"Tier": f"{t.cap_pct:.1%}", "Base": t.final_borrowing_base / 1e6,
+                      "Cutback": t.total_cutback_dollars / 1e6, "Capped": t.capped_buyer_count} for t in tiers]
+                )
+                st.dataframe(tier_df, width="stretch", hide_index=True,
+                             column_config={"Base": _money_column("Base"), "Cutback": _money_column("Cutback")})
+            with panel("solver"):
+                section_head("Fixed-point solver check")
+                solver_audit_rows(bb)
 
     with tab_stress:
-        render_kpi_cards(
-            [
-                {"label": "Shocked BB", "value": fmt_millions(stress.shocked_bb), "tone": "blue",
-                 "sub": f"{fmt_signed_millions(stress.bb_change)} vs. baseline"},
-                {"label": "Shocked Headroom", "value": fmt_millions(stress.shocked_headroom),
-                 "tone": "emerald" if stress.headroom_change >= 0 else "orange",
-                 "sub": f"{fmt_signed_millions(stress.headroom_change)} change"},
-                {"label": "Net Futures VM", "value": fmt_signed_millions(stress.vm_inflow - stress.vm_outflow),
-                 "tone": "red" if stress.vm_outflow > 0 else "emerald",
-                 "sub": f"Call {fmt_millions(stress.vm_outflow)} · inflow {fmt_millions(stress.vm_inflow)}"},
-                {"label": "IM Step-Up + BB Cure",
-                 "value": fmt_millions(stress.im_addon_outflow + stress.bb_deficiency_cure), "tone": "amber",
-                 "sub": f"IM {fmt_millions(stress.im_addon_outflow)} · cure {fmt_millions(stress.bb_deficiency_cure)}"},
-                {"label": "Net Liquidity Buffer", "value": fmt_signed_millions(stress.net_liquidity_buffer),
-                 "tone": regime_tone, "chip": _regime_label(stress.regime),
-                 "spark": [p.net_liquidity_buffer for p in sweep.points]},
-            ]
-        )
-        chart(build_stress_sweep_chart(sweep, parallel_shock, is_custom), "chart_sweep")
-        st.caption(
-            f"Upside squeeze breakeven: {fmt_pct(be_up) if be_up is not None else 'none in range'} · "
-            f"Downside deficiency breakeven: {fmt_pct(be_down) if be_down is not None else 'none in range'} · "
-            "Regime counts across 41 shocks: "
-            + ", ".join(f"{_regime_label(k).title()} {v}" for k, v in sweep.regime_counts.items())
-        )
-        chart(build_active_shock_sources_uses_chart(stress, terms), "chart_sources_uses")
-        with st.expander("Full 41-Point Stress Sweep Table"):
+        chart(build_stress_sweep_chart(sweep, parallel_shock, is_custom), "chart_sweep",
+              "Margin-trap stress sweep",
+              f"41 parallel shocks from -20% to +20%. Squeeze breakeven "
+              f"{fmt_pct(be_up) if be_up is not None else 'none in range'}, deficiency breakeven "
+              f"{fmt_pct(be_down) if be_down is not None else 'none in range'}. Regime counts: "
+              + ", ".join(f"{regime_label(k)} {v}" for k, v in sweep.regime_counts.items()) + ".")
+        col_main, col_side = st.columns([2.1, 1], gap="medium")
+        with col_main:
+            chart(build_active_shock_sources_uses_chart(stress, terms), "chart_sources_uses",
+                  "Cash sources and uses at the active shock", scenario)
+        with col_side:
+            with panel("active_ledger"):
+                section_head("Active shock ledger", scenario)
+                render_audit_rows(
+                    [
+                        ("Shocked borrowing base", fmt_millions(stress.shocked_bb), False),
+                        ("Change vs. baseline", fmt_signed_millions(stress.bb_change), False),
+                        ("Shocked headroom", fmt_millions(stress.shocked_headroom), False),
+                        ("Futures MtM", fmt_signed_millions(stress.futures_mtm_pnl), False),
+                        ("Variation margin call", fmt_millions(stress.vm_outflow), False),
+                        ("Variation margin inflow", fmt_millions(stress.vm_inflow), False),
+                        ("Initial margin step-up", fmt_millions(stress.im_addon_outflow), False),
+                        ("BB deficiency cure", fmt_millions(stress.bb_deficiency_cure), False),
+                        ("Liquid resources", fmt_millions(stress.total_liquid_resources), False),
+                        ("Cash outflows", fmt_millions(stress.total_cash_outflows), False),
+                        ("Net liquidity buffer", f"<b>{fmt_signed_millions(stress.net_liquidity_buffer)}</b>", False),
+                    ]
+                )
+        with st.expander("Full 41-point sweep table"):
             sweep_df = sweep.to_dataframe()
-            st.dataframe(sweep_df, width="stretch", hide_index=True)
+            view = pd.DataFrame({
+                "Shock": sweep_df["shock_pct"] * 100,
+                "Borrowing base": sweep_df["shocked_bb"] / 1e6,
+                "Headroom": sweep_df["shocked_headroom"] / 1e6,
+                "VM call": sweep_df["vm_outflow"] / 1e6,
+                "VM inflow": sweep_df["vm_inflow"] / 1e6,
+                "IM step-up": sweep_df["im_addon_outflow"] / 1e6,
+                "BB cure": sweep_df["bb_deficiency_cure"] / 1e6,
+                "Net buffer": sweep_df["net_liquidity_buffer"] / 1e6,
+                "Regime": [regime_label(r) for r in sweep_df["regime"]],
+            })
+            st.dataframe(
+                view, width="stretch", hide_index=True,
+                column_config={"Shock": st.column_config.NumberColumn("Shock", format="%+.0f%%"),
+                               **{c: _money_column(c) for c in ["Borrowing base", "Headroom", "VM call", "VM inflow",
+                                                                 "IM step-up", "BB cure", "Net buffer"]}},
+            )
             st.download_button(
-                "Download Stress Sweep CSV", data=sweep_df.to_csv(index=False),
+                "Download sweep (CSV, full precision)", data=sweep_df.to_csv(index=False),
                 file_name=f"stress_sweep_{market.as_of_date.replace('-', '')}.csv",
-                mime="text/csv", width="stretch", key="dl_sweep",
+                mime="text/csv", key="dl_sweep",
             )
         stress_methodology_expander()
 
     with tab_heat:
-        section_head("Mixed-Shock Scenario Heatmap",
-                     "Gold & Copper move together on the vertical axis, Lumber & Cocoa on the horizontal; "
-                     "the dashed line marks where the net liquidity buffer hits $0.")
         active_nlb = None
         if active_point is not None and active_point[0] in grid.metals_axis and active_point[1] in grid.softs_axis:
             i, j = grid.metals_axis.index(active_point[0]), grid.softs_axis.index(active_point[1])
             active_nlb = grid.net_buffer[i][j]
-        render_kpi_cards(
+        squeeze_count = sum(1 for row in grid.regime for r in row if r == "CRITICAL_SQUEEZE")
+        render_kpi_row(
             [
-                {"label": "Scenarios in Critical Squeeze", "value": fmt_pct(grid.squeeze_share, 1), "tone": "red",
-                 "sub": f"of {len(grid.metals_axis) ** 2} grid points"},
-                {"label": "Worst Grid Scenario", "value": fmt_signed_millions(grid.worst_net_buffer), "tone": "orange",
-                 "sub": f"Metals {grid.worst_metals_shock:+.1%} · softs {grid.worst_softs_shock:+.1%}"},
-                {"label": "Active Scenario", "value": fmt_signed_millions(stress.net_liquidity_buffer),
-                 "tone": regime_tone, "chip": _regime_label(stress.regime),
-                 "sub": "On grid" if active_nlb is not None else "Off the 2.5% grid (exact engine value)"},
+                {"label": "Grid scenarios in critical squeeze", "value": fmt_pct(grid.squeeze_share, 1),
+                 "context": f"{squeeze_count} of {len(grid.metals_axis) ** 2} combinations"},
+                {"label": "Worst grid scenario", "value": fmt_signed_millions(grid.worst_net_buffer),
+                 "context": f"Metals {grid.worst_metals_shock:+.1%}, softs {grid.worst_softs_shock:+.1%}"},
+                {"label": "Active scenario", "value": fmt_signed_millions(stress.net_liquidity_buffer),
+                 "status": status, "status_text": regime_label(stress.regime),
+                 "context": "On the grid (circled)" if active_nlb is not None
+                            else "Between grid points; exact engine value"},
             ]
         )
-        chart(build_shock_heatmap(grid, active_point), "chart_heatmap")
+        chart(build_shock_heatmap(grid, active_point), "chart_heatmap",
+              "Net liquidity buffer by mixed shock",
+              "Gold and copper move together (vertical), lumber and cocoa together (horizontal), 2.5% steps. "
+              "Dashed line: buffer of $0. Darker cells are worse.")
 
     with tab_mc:
-        render_kpi_cards(
+        render_kpi_row(
             [
-                {"label": "LaR 95% (5th pct buffer)", "value": fmt_signed_millions(mc.p05_net_buffer),
-                 "tone": "violet" if mc.p05_net_buffer >= 0 else "red",
-                 "sub": f"{mc.horizon_days}-day horizon"},
-                {"label": "Expected Shortfall 95%", "value": fmt_signed_millions(mc.es95_net_buffer),
-                 "tone": "orange", "sub": "Mean of worst 5% paths"},
-                {"label": "P(Critical Squeeze)", "value": fmt_pct(mc.prob_critical, 2), "tone": "red",
-                 "sub": f"{mc.regime_counts['CRITICAL_SQUEEZE']:,} paths"},
-                {"label": "P(Margin Trap)", "value": fmt_pct(mc.prob_margin_trap, 1), "tone": "amber",
-                 "sub": f"{mc.regime_counts['MARGIN_TRAP_WARNING']:,} paths"},
-                {"label": "P(BB Deficiency)", "value": fmt_pct(mc.prob_deficiency, 1), "tone": "orange",
-                 "sub": f"{mc.regime_counts['BB_DEFICIENCY_WARNING']:,} paths"},
+                {"label": "LaR 95%", "value": fmt_signed_millions(mc.p05_net_buffer),
+                 "context": f"5th percentile buffer, {mc.horizon_days}-day",
+                 "status": "breach" if mc.p05_net_buffer < 0 else None, "status_text": "Below zero"},
+                {"label": "LaR 99%", "value": fmt_signed_millions(mc.p01_net_buffer),
+                 "context": f"1st percentile buffer, {mc.horizon_days}-day",
+                 "status": "breach" if mc.p01_net_buffer < 0 else None, "status_text": "Below zero"},
+                {"label": "Expected shortfall 95%", "value": fmt_signed_millions(mc.es95_net_buffer),
+                 "context": "Mean buffer of the worst 5% of paths"},
+                {"label": "P(critical squeeze)", "value": fmt_pct(mc.prob_critical, 2),
+                 "context": f"{mc.regime_counts['CRITICAL_SQUEEZE']:,} of {mc.n_sims:,} paths"},
+                {"label": "P(margin trap)", "value": fmt_pct(mc.prob_margin_trap, 1),
+                 "context": f"P(BB deficiency) {fmt_pct(mc.prob_deficiency, 1)}"},
             ]
         )
-        chart(build_mc_distribution_chart(mc), "chart_mc")
-        col_corr, col_vols = st.columns([1.2, 1])
-        with col_corr:
-            chart(build_correlation_heatmap(mc, COMMODITY_SPECS), "chart_corr")
-        with col_vols:
-            section_head("Horizon Volatility & Worst Path",
-                         f"Calibrated on the last {mc.lookback_days} daily returns of the active feed.")
-            vol_df = pd.DataFrame(
-                [
-                    {"Commodity": COMMODITY_SPECS[t].name,
-                     f"{mc.horizon_days}d σ": f"{mc.horizon_vols[t]:.2%}",
-                     "Worst-path move": f"{mc.worst_scenario_shocks[t]:+.2%}"}
-                    for t in REQUIRED_TICKERS
-                ]
-            )
-            st.dataframe(vol_df, width="stretch", hide_index=True)
-            st.caption("The calibrated sample draws each commodity independently, so correlations are near zero; "
-                       "switch to the live feed for real cross-commodity co-movement.")
+        col_main, col_side = st.columns([2.1, 1], gap="medium")
+        with col_main:
+            chart(build_mc_distribution_chart(mc), "chart_mc", "Simulated net liquidity buffer",
+                  f"{mc.n_sims:,} correlated lognormal paths over {mc.horizon_days} trading days, seed {mc.seed}. "
+                  "Red: paths at or below the 5th percentile.")
+        with col_side:
+            chart(build_correlation_heatmap(mc, COMMODITY_SPECS), "chart_corr", "Return correlation",
+                  f"Daily log returns, last {mc.lookback_days} observations.")
+            with panel("mc_vols"):
+                section_head("Horizon volatility and worst path")
+                vol_df = pd.DataFrame(
+                    [{"Commodity": COMMODITY_SPECS[t].name, "Horizon vol": mc.horizon_vols[t] * 100,
+                      "Worst-path move": mc.worst_scenario_shocks[t] * 100} for t in REQUIRED_TICKERS]
+                )
+                st.dataframe(vol_df, width="stretch", hide_index=True,
+                             column_config={"Horizon vol": st.column_config.NumberColumn(
+                                                f"{mc.horizon_days}d vol", format="%.2f%%"),
+                                            "Worst-path move": st.column_config.NumberColumn(format="%+.2f%%")})
+        if market_data_status(market)[0].startswith("Bundled"):
+            provenance_note("The bundled sample draws each commodity independently, so correlations are near "
+                            "zero. Switch to the live feed for observed co-movement.")
 
     with tab_replay:
-        section_head("Historical Replay",
-                     "Today's quantities, receivables and drawn balance replayed through each historical day's "
-                     "prices and 30-day volatilities.")
+        if market.source_label.startswith("Live"):
+            source_note = "Prices: Yahoo Finance front-month futures (observed)."
+        elif market.source_label.startswith("Custom"):
+            source_note = "Prices: uploaded CSV."
+        else:
+            source_note = "Prices: bundled calibrated sample (synthetic series, not observed market history)."
+        provenance_note(f"{source_note} Borrowing base, margin and buffer are modelled from those prices with "
+                        "today's quantities, receivables and drawn balance held fixed.")
         if replay is None:
             st.info("Not enough price and volatility history in the active feed to run a replay.")
         else:
-            render_kpi_cards(
+            render_kpi_row(
                 [
-                    {"label": "Days in BB Deficiency", "value": f"{replay.deficiency_days} / {replay.n_days}",
-                     "tone": "orange" if replay.deficiency_days else "emerald",
-                     "sub": f"{replay.start_date} → {replay.end_date}"},
-                    {"label": "Minimum Headroom", "value": fmt_millions(replay.min_headroom), "tone": "blue",
-                     "sub": f"on {replay.min_headroom_date}", "spark": replay.frame["headroom"].tolist()},
-                    {"label": "Worst 5-Day VM Call", "value": fmt_millions(replay.max_5d_vm_outflow), "tone": "red",
-                     "sub": f"window ending {replay.max_5d_vm_outflow_date}"},
-                    {"label": "Lowest Stressed Buffer", "value": fmt_signed_millions(replay.min_stressed_buffer),
-                     "tone": "red" if replay.min_stressed_buffer < 0 else "emerald",
-                     "sub": f"on {replay.min_stressed_buffer_date}",
-                     "spark": replay.frame["stressed_buffer"].tolist()},
+                    {"label": "BB deficiency days", "value": f"{replay.deficiency_days} / {replay.n_days}",
+                     "context": f"Base below drawn balance, {replay.start_date} to {replay.end_date}"},
+                    {"label": "Minimum headroom", "value": fmt_millions(replay.min_headroom),
+                     "context": f"on {replay.min_headroom_date}"},
+                    {"label": "Worst 5-day margin call", "value": fmt_millions(replay.max_5d_vm_outflow),
+                     "context": f"window ending {replay.max_5d_vm_outflow_date}"},
+                    {"label": "Lowest stressed buffer", "value": fmt_signed_millions(replay.min_stressed_buffer),
+                     "context": f"on {replay.min_stressed_buffer_date}",
+                     "status": "breach" if replay.min_stressed_buffer < 0 else None, "status_text": "Below zero"},
                 ]
             )
-            chart(build_replay_chart(replay, terms), "chart_replay")
-            with st.expander("Daily Replay Table"):
-                replay_df = replay.frame.reset_index()
-                st.dataframe(replay_df, width="stretch", hide_index=True)
+            chart(build_replay_chart(replay, terms), "chart_replay", "Replay of today's book",
+                  "Stressed buffer = cash + headroom + 5-day net variation margin - deficiency cure.")
+            with st.expander("Daily replay table"):
+                rf = replay.frame.reset_index()
+                view = pd.DataFrame({
+                    "Date": rf["date"].dt.date,
+                    "Borrowing base": rf["borrowing_base"] / 1e6,
+                    "Headroom": rf["headroom"] / 1e6,
+                    "BB cure": rf["bb_deficiency_cure"] / 1e6,
+                    "Daily VM": rf["daily_vm"] / 1e6,
+                    "5-day VM": rf["rolling_vm"] / 1e6,
+                    "Stressed buffer": rf["stressed_buffer"] / 1e6,
+                })
+                st.dataframe(view, width="stretch", hide_index=True,
+                             column_config={c: _money_column(c) for c in view.columns if c != "Date"})
                 st.download_button(
-                    "Download Replay CSV", data=replay_df.to_csv(index=False),
+                    "Download replay (CSV, full precision)", data=rf.to_csv(index=False),
                     file_name=f"historical_replay_{market.as_of_date.replace('-', '')}.csv",
-                    mime="text/csv", width="stretch", key="dl_replay",
+                    mime="text/csv", key="dl_replay",
                 )
 
 

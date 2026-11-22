@@ -1,4 +1,4 @@
-"""Plotly chart builders for the workbench (single-axis panels, Plotly 6/7 compliant)."""
+"""Plotly chart builders. Single y-axis per panel, no in-figure titles (panels carry the headings)."""
 
 from __future__ import annotations
 
@@ -15,13 +15,27 @@ from core.schemas import (
     FacilityTerms,
     HistoricalReplayResult,
     InventoryValuation,
-    LiquidityRegime,
     MonteCarloResult,
     ShockGridResult,
     StressScenarioResult,
     StressSweepResult,
 )
-from ui.theme import COLORS, COMMODITY_COLORS, FONT_STACK, REGIME_STYLES, apply_institutional_layout
+from ui.theme import (
+    COLORS,
+    COMMODITY_COLORS,
+    COMMODITY_DASH,
+    FONT_SANS,
+    PORTFOLIO_COLOR,
+    STATUS,
+    apply_institutional_layout,
+    bridge_label,
+    regime_label,
+    regime_status,
+)
+
+BREACH = STATUS["breach"][0]
+CAUTION = STATUS["caution"][0]
+HEALTHY = STATUS["healthy"][0]
 
 
 def _m(val: float) -> float:
@@ -33,109 +47,6 @@ def _mtext(val: float) -> str:
     return f"{sign}${abs(val) / 1e6:,.2f}M"
 
 
-def build_borrowing_base_waterfall(bb_result: BorrowingBaseResult) -> go.Figure:
-    """Chart 1: gross collateral to final borrowing base bridge."""
-    wf = bb_result.waterfall
-    measures = [w.measure for w in wf]
-    y_vals = [None if w.measure == "total" else _m(w.amount) for w in wf]
-    fig = go.Figure(
-        go.Waterfall(
-            x=[_wrap_label(w.label) for w in wf],
-            measure=measures,
-            y=y_vals,
-            text=[_mtext(w.amount) for w in wf],
-            textposition="outside",
-            textfont=dict(color=COLORS["text"]),
-            connector=dict(line=dict(color=COLORS["slate"], width=1, dash="dot")),
-            increasing=dict(marker=dict(color=COLORS["emerald"])),
-            decreasing=dict(marker=dict(color=COLORS["red"])),
-            totals=dict(marker=dict(color=COLORS["deep_blue"])),
-            hovertemplate="%{x}<br>%{text}<extra></extra>",
-            name="Borrowing Base Bridge",
-        )
-    )
-    fig.add_hline(
-        y=_m(bb_result.facility_limit), line=dict(color=COLORS["blue"], dash="dash", width=1.5),
-        annotation_text=f"Facility Limit {_mtext(bb_result.facility_limit)}",
-        annotation_position="top left", annotation_font=dict(color=COLORS["blue"]),
-    )
-    fig.add_hline(
-        y=_m(bb_result.drawn_revolver), line=dict(color=COLORS["amber"], dash="dash", width=1.5),
-        annotation_text=f"Drawn Revolver {_mtext(bb_result.drawn_revolver)}",
-        annotation_position="bottom left", annotation_font=dict(color=COLORS["amber"]),
-    )
-    peak = max(w.running_total for w in wf) if wf else 0.0
-    apply_institutional_layout(fig, "Borrowing Base Waterfall Bridge ($M)", height=470, yaxis_title="$M")
-    fig.update_layout(showlegend=False, hovermode="closest")
-    fig.update_xaxes(tickangle=0)
-    fig.update_yaxes(range=[0.0, _m(max(peak, bb_result.facility_limit)) * 1.15])
-    return fig
-
-
-def build_haircut_decomposition_chart(inventory_items: Sequence[InventoryValuation]) -> go.Figure:
-    """Chart 2: 100% stacked advance rate vs. effective haircut components per commodity."""
-    names = [f"{i.name} ({i.ticker})" for i in inventory_items]
-    custom = [
-        [i.base_haircut * 100, i.vol_addon * 100, i.unhedged_penalty * 100, i.raw_haircut * 100,
-         i.total_haircut * 100, i.realized_vol_30d * 100, i.hedge_ratio * 100]
-        for i in inventory_items
-    ]
-    hover_tail = (
-        "<br>Raw base %{customdata[0]:.2f}% | vol add-on %{customdata[1]:.2f}% | "
-        "unhedged %{customdata[2]:.2f}%<br>Raw haircut %{customdata[3]:.2f}% -> clamped %{customdata[4]:.2f}%"
-        "<br>30d vol %{customdata[5]:.2f}% | hedge ratio %{customdata[6]:.1f}%<extra></extra>"
-    )
-    components = [
-        ("Advance Rate", [i.advance_rate for i in inventory_items], COLORS["emerald"]),
-        ("Base Haircut", [i.eff_base_haircut for i in inventory_items], COLORS["slate"]),
-        ("Vol Add-On", [i.eff_vol_addon for i in inventory_items], COLORS["amber"]),
-        ("Unhedged Penalty", [i.eff_unhedged_penalty for i in inventory_items], COLORS["orange"]),
-    ]
-    floor = [i.eff_floor_adjustment for i in inventory_items]
-    if any(f > 0.0 for f in floor):
-        components.append(("Min Haircut Floor Adj", floor, COLORS["deep_blue"]))
-    fig = go.Figure()
-    for label, values, color in components:
-        fig.add_trace(
-            go.Bar(
-                y=names, x=[v * 100 for v in values], name=label, orientation="h",
-                marker=dict(color=color), customdata=custom,
-                text=[f"{v * 100:.1f}%" if v >= 0.03 else "" for v in values],
-                textposition="inside", insidetextanchor="middle", textfont=dict(color=COLORS["text"]),
-                hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{x:.2f}}% of collateral value" + hover_tail,
-            )
-        )
-    apply_institutional_layout(fig, "Advance Rate vs. Haircut Decomposition (% of Market Value)", height=420)
-    fig.update_layout(barmode="stack", hovermode="closest")
-    fig.update_xaxes(range=[0, 100], ticksuffix="%")
-    fig.update_yaxes(autorange="reversed")
-    return fig
-
-
-def build_volatility_history_chart(vol_df: pd.DataFrame, specs: Mapping[str, CommoditySpec]) -> go.Figure:
-    """Chart 3: rolling 30-day annualized realized volatility history."""
-    fig = go.Figure()
-    for ticker in vol_df.columns:
-        series = vol_df[ticker].dropna()
-        label = specs[ticker].name if ticker in specs else ticker
-        fig.add_trace(
-            go.Scatter(
-                x=series.index, y=series.to_numpy() * 100, mode="lines", name=f"{label} ({ticker})",
-                line=dict(color=COMMODITY_COLORS.get(ticker, COLORS["blue"]), width=2),
-                hovertemplate=f"{label}: %{{y:.2f}}%<extra></extra>",
-            )
-        )
-    for level in (15, 20, 30):
-        fig.add_hline(
-            y=level, line=dict(color=COLORS["slate"], dash="dot", width=1),
-            annotation_text=f"{level}%", annotation_position="right",
-            annotation_font=dict(color=COLORS["muted"], size=10),
-        )
-    apply_institutional_layout(fig, "30-Day Realized Volatility (Annualized)", height=420, yaxis_title="Vol (%)")
-    fig.update_yaxes(ticksuffix="%", rangemode="tozero")
-    return fig
-
-
 def _wrap_label(name: str) -> str:
     words = name.split()
     if len(name) <= 14 or len(words) < 2:
@@ -144,47 +55,156 @@ def _wrap_label(name: str) -> str:
     return " ".join(words[:best]) + "<br>" + " ".join(words[best:])
 
 
+def _note(fig: go.Figure, x: float, text: str, color: str, top: bool, align: str = "left", row: int | None = None,
+          yref: str = "paper") -> None:
+    """Compact text label pinned to the top or bottom edge of the plot at data x."""
+    xanchor = "left" if align == "left" else "right"
+    shift = 4 if align == "left" else -4
+    kwargs = dict(x=x, y=1.0 if top else 0.0, yref=yref if row is None else f"y{'' if row == 1 else row} domain",
+                  xref="x" if row in (None, 1) else f"x{row}", text=text, showarrow=False, xanchor=xanchor,
+                  yanchor="top" if top else "bottom", xshift=shift, yshift=-2 if top else 2,
+                  font=dict(size=11, color=color, family=FONT_SANS), bgcolor="rgba(255, 255, 255, 0.85)")
+    fig.add_annotation(**kwargs)
+
+
+def build_borrowing_base_waterfall(bb_result: BorrowingBaseResult) -> go.Figure:
+    """Gross collateral to final borrowing base bridge, with facility limit and drawn balance."""
+    wf = bb_result.waterfall
+    fig = go.Figure(
+        go.Waterfall(
+            x=[_wrap_label(bridge_label(w.label)) for w in wf],
+            measure=[w.measure for w in wf],
+            y=[None if w.measure == "total" else _m(w.amount) for w in wf],
+            text=[_mtext(w.amount) for w in wf],
+            textposition="outside",
+            textfont=dict(color=COLORS["text"], size=11),
+            cliponaxis=False,
+            connector=dict(line=dict(color=COLORS["neutral_fill"], width=1)),
+            increasing=dict(marker=dict(color=COLORS["accent_hover"])),
+            decreasing=dict(marker=dict(color="#94A3B8")),
+            totals=dict(marker=dict(color=COLORS["accent"])),
+            hovertemplate="%{x}<br>%{text}<extra></extra>",
+            name="Borrowing base bridge",
+        )
+    )
+    fig.add_hline(y=_m(bb_result.facility_limit), line=dict(color=COLORS["reference"], dash="dash", width=1.2))
+    fig.add_hline(y=_m(bb_result.drawn_revolver), line=dict(color=COLORS["text"], dash="dot", width=1.2))
+    fig.add_annotation(x=0, xref="paper", y=_m(bb_result.facility_limit), yref="y", xanchor="left", yanchor="bottom",
+                       showarrow=False, text=f"Facility limit {_mtext(bb_result.facility_limit)}",
+                       font=dict(size=11, color=COLORS["muted"]), bgcolor="rgba(255, 255, 255, 0.85)")
+    fig.add_annotation(x=0, xref="paper", y=_m(bb_result.drawn_revolver), yref="y", xanchor="left", yanchor="top",
+                       showarrow=False, text=f"Drawn {_mtext(bb_result.drawn_revolver)}",
+                       font=dict(size=11, color=COLORS["text"]), bgcolor="rgba(255, 255, 255, 0.85)")
+    peak = max(w.running_total for w in wf) if wf else 0.0
+    apply_institutional_layout(fig, height=400, yaxis_title="USD millions")
+    fig.update_layout(showlegend=False, hovermode="closest", margin=dict(t=24, b=56))
+    fig.update_xaxes(tickangle=0, tickfont=dict(size=11, color=COLORS["text_secondary"]))
+    fig.update_yaxes(range=[0.0, _m(max(peak, bb_result.facility_limit)) * 1.12], tickprefix="$")
+    return fig
+
+
+def build_haircut_decomposition_chart(inventory_items: Sequence[InventoryValuation]) -> go.Figure:
+    """100% stacked advance rate vs. effective haircut components per commodity."""
+    names = [i.name for i in inventory_items]
+    custom = [
+        [i.base_haircut * 100, i.vol_addon * 100, i.unhedged_penalty * 100, i.raw_haircut * 100,
+         i.total_haircut * 100, i.realized_vol_30d * 100, i.hedge_ratio * 100]
+        for i in inventory_items
+    ]
+    hover_tail = (
+        "<br>Raw: base %{customdata[0]:.2f}%, vol add-on %{customdata[1]:.2f}%, unhedged %{customdata[2]:.2f}%"
+        "<br>Haircut %{customdata[3]:.2f}% raw, %{customdata[4]:.2f}% after floor/cap"
+        "<br>30d vol %{customdata[5]:.2f}%, hedge ratio %{customdata[6]:.1f}%<extra></extra>"
+    )
+    components = [
+        ("Advance rate", [i.advance_rate for i in inventory_items], COLORS["accent"], "#FFFFFF"),
+        ("Base haircut", [i.eff_base_haircut for i in inventory_items], "#94A3B8", COLORS["text"]),
+        ("Volatility add-on", [i.eff_vol_addon for i in inventory_items], "#CBD5E1", COLORS["text"]),
+        ("Unhedged penalty", [i.eff_unhedged_penalty for i in inventory_items], "#D9C9A8", COLORS["text"]),
+    ]
+    floor = [i.eff_floor_adjustment for i in inventory_items]
+    if any(f > 0.0 for f in floor):
+        components.append(("Minimum haircut floor", floor, "#E8ECF1", COLORS["text"]))
+    fig = go.Figure()
+    for label, values, color, text_color in components:
+        fig.add_trace(
+            go.Bar(
+                y=names, x=[v * 100 for v in values], name=label, orientation="h",
+                marker=dict(color=color, line=dict(color="#FFFFFF", width=1)), customdata=custom,
+                text=[f"{v * 100:.1f}%" if v >= 0.04 else "" for v in values],
+                textposition="inside", insidetextanchor="middle", textfont=dict(color=text_color, size=11),
+                hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{x:.2f}}% of market value" + hover_tail,
+            )
+        )
+    apply_institutional_layout(fig, height=330, xaxis_title="Share of gross market value (%)")
+    fig.update_layout(barmode="stack", hovermode="closest", margin=dict(l=72, t=36))
+    fig.update_xaxes(range=[0, 100], ticksuffix="%", showgrid=True, gridcolor=COLORS["grid"])
+    fig.update_yaxes(autorange="reversed", showgrid=False, tickfont=dict(size=12, color=COLORS["text_secondary"]))
+    return fig
+
+
+def build_volatility_history_chart(vol_df: pd.DataFrame, specs: Mapping[str, CommoditySpec]) -> go.Figure:
+    """Rolling 30-day annualized realized volatility with each commodity's reference volatility."""
+    fig = go.Figure()
+    for ticker in vol_df.columns:
+        series = vol_df[ticker].dropna()
+        label = specs[ticker].name if ticker in specs else ticker
+        fig.add_trace(
+            go.Scatter(
+                x=series.index, y=series.to_numpy() * 100, mode="lines", name=label,
+                line=dict(color=COMMODITY_COLORS.get(ticker, PORTFOLIO_COLOR), width=1.8,
+                          dash=COMMODITY_DASH.get(ticker, "solid")),
+                hovertemplate=f"{label}: %{{y:.2f}}%<extra></extra>",
+            )
+        )
+    refs: dict[float, list[str]] = {}
+    for t in vol_df.columns:
+        if t in specs:
+            refs.setdefault(round(specs[t].ref_vol * 100, 4), []).append(specs[t].name)
+    for level in sorted(refs):
+        fig.add_hline(y=level, line=dict(color=COLORS["reference"], dash="dot", width=1))
+    apply_institutional_layout(fig, height=330, yaxis_title="Annualized volatility (%)")
+    fig.update_layout(margin=dict(t=36))
+    fig.update_yaxes(ticksuffix="%", rangemode="tozero")
+    return fig
+
+
 def build_receivables_concentration_chart(bb_result: BorrowingBaseResult) -> go.Figure:
-    """Chart 4: pre-cap vs. capped eligible AR per buyer against the dynamic cap line."""
+    """Pre-cap vs. capped eligible AR per buyer against the single-buyer cap."""
     items = bb_result.receivable_items
     buyers = [_wrap_label(r.buyer_name) for r in items]
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
-            x=buyers, y=[_m(r.pre_cap_eligible) for r in items], name="Pre-Cap Eligible AR ($M)",
-            marker=dict(color=COLORS["slate"]),
-            hovertemplate="%{x}<br>Pre-cap: $%{y:,.2f}M<extra></extra>",
+            x=buyers, y=[_m(r.pre_cap_eligible) for r in items], name="Eligible before cap",
+            marker=dict(color="#CBD5E1"), hovertemplate="%{x}<br>Before cap: $%{y:,.2f}M<extra></extra>",
         )
     )
     fig.add_trace(
         go.Bar(
-            x=buyers, y=[_m(r.final_eligible) for r in items], name="Final Capped Eligible AR ($M)",
-            marker=dict(color=[COLORS["red"] if r.is_capped else COLORS["blue"] for r in items]),
+            x=buyers, y=[_m(r.final_eligible) for r in items], name="Eligible after cap",
+            marker=dict(color=[CAUTION if r.is_capped else COLORS["accent"] for r in items]),
             text=[_mtext(r.final_eligible) if r.final_eligible > 0 else "" for r in items],
             textposition="outside", textangle=0, cliponaxis=False,
             textfont=dict(color=COLORS["text"], size=10),
-            hovertemplate="%{x}<br>Final: $%{y:,.2f}M<extra></extra>",
+            hovertemplate="%{x}<br>After cap: $%{y:,.2f}M<extra></extra>",
         )
     )
     for r in items:
         if not r.is_aging_eligible:
-            fig.add_annotation(
-                x=_wrap_label(r.buyer_name), y=0.0, text=">90d<br>Ineligible", showarrow=False, yshift=24,
-                font=dict(color=COLORS["orange"], size=11),
-            )
+            fig.add_annotation(x=_wrap_label(r.buyer_name), y=0.0, text="Over 90 days,<br>ineligible",
+                               showarrow=False, yanchor="bottom", yshift=4, font=dict(color=COLORS["muted"], size=10))
     cap_m = _m(bb_result.cap_dollar_limit)
-    fig.add_hline(
-        y=cap_m, line=dict(color=COLORS["amber"], dash="dash", width=1.5),
-        annotation_text=f"Dynamic Cap ({bb_result.concentration_cap_pct:.1%} × BB = ${cap_m:.2f}M)",
-        annotation_position="top right", annotation_yshift=4, annotation_font=dict(color=COLORS["amber"]),
-    )
+    fig.add_hline(y=cap_m, line=dict(color=COLORS["reference"], dash="dash", width=1.2))
+    fig.add_annotation(x=1.0, xref="paper", y=cap_m, yref="y", xanchor="right", yanchor="bottom", showarrow=False,
+                       text=f"Cap {bb_result.concentration_cap_pct:.1%} of BB = ${cap_m:.2f}M",
+                       font=dict(size=11, color=COLORS["muted"]))
     peak = max([_m(r.pre_cap_eligible) for r in items] + [cap_m, 1.0])
-    apply_institutional_layout(fig, "Receivables Concentration: Pre-Cap vs. Capped Eligible AR", height=440,
-                               yaxis_title="$M")
-    fig.update_layout(barmode="group", hovermode="closest", margin=dict(b=110),
+    apply_institutional_layout(fig, height=360, yaxis_title="USD millions")
+    fig.update_layout(barmode="group", hovermode="closest", margin=dict(t=36, b=64),
                       uniformtext=dict(minsize=9, mode="show"))
-    fig.update_xaxes(tickangle=0, tickfont=dict(size=10))
-    fig.update_yaxes(range=[0.0, peak * 1.25])
+    fig.update_xaxes(tickangle=0, tickfont=dict(size=10, color=COLORS["text_secondary"]))
+    fig.update_yaxes(range=[0.0, peak * 1.22], tickprefix="$")
     return fig
 
 
@@ -205,86 +225,110 @@ def _regime_segments(sweep_result: StressSweepResult) -> list[tuple[float, float
     return segments
 
 
+def _add_regime_bands(fig: go.Figure, sweep_result: StressSweepResult, row: int | None = None) -> None:
+    for x0, x1, regime in _regime_segments(sweep_result):
+        kwargs = dict(row=row, col=1) if row else {}
+        fig.add_vrect(x0=x0, x1=x1, fillcolor=STATUS[regime_status(regime)][1], line_width=0, layer="below",
+                      **kwargs)
+
+
+def _buffer_trace(df: pd.DataFrame) -> go.Scatter:
+    labels = [regime_label(r) for r in df["regime"]]
+    return go.Scatter(
+        x=df["shock_pct"] * 100, y=df["net_liquidity_buffer"] / 1e6, mode="lines+markers",
+        name="Net liquidity buffer", line=dict(color=PORTFOLIO_COLOR, width=2), marker=dict(size=4),
+        customdata=labels, hovertemplate="Shock %{x:+.0f}%<br>Buffer $%{y:,.2f}M<br>%{customdata}<extra></extra>",
+    )
+
+
+def build_buffer_profile_chart(sweep_result: StressSweepResult, active_shock_pct: float | None) -> go.Figure:
+    """Overview: net liquidity buffer across parallel shocks with regime shading and breakevens."""
+    df = sweep_result.to_dataframe()
+    fig = go.Figure(_buffer_trace(df))
+    _add_regime_bands(fig, sweep_result)
+    fig.add_hline(y=0.0, line=dict(color=BREACH, dash="dash", width=1))
+    if active_shock_pct is not None:
+        fig.add_vline(x=active_shock_pct * 100, line=dict(color=COLORS["accent"], width=1.5))
+        _note(fig, active_shock_pct * 100, f"Active {active_shock_pct:+.0%}", COLORS["accent"], top=True)
+    if sweep_result.upside_squeeze_breakeven_pct is not None:
+        be = sweep_result.upside_squeeze_breakeven_pct * 100
+        fig.add_vline(x=be, line=dict(color=BREACH, dash="dot", width=1))
+        _note(fig, be, f"Squeeze {be:+.2f}%", BREACH, top=False, align="right")
+    if sweep_result.downside_deficiency_breakeven_pct is not None:
+        be = sweep_result.downside_deficiency_breakeven_pct * 100
+        fig.add_vline(x=be, line=dict(color=CAUTION, dash="dot", width=1))
+        _note(fig, be, f"Deficiency {be:+.2f}%", CAUTION, top=False, align="right")
+    apply_institutional_layout(fig, height=430, yaxis_title="Net liquidity buffer (USD M)",
+                               xaxis_title="Parallel price shock to all four commodities (%)")
+    fig.update_layout(showlegend=False, hovermode="closest", margin=dict(t=12))
+    fig.update_xaxes(ticksuffix="%", dtick=5)
+    fig.update_yaxes(tickprefix="$")
+    return fig
+
+
 def build_stress_sweep_chart(
     sweep_result: StressSweepResult,
     active_shock_pct: float,
     is_custom_per_commodity: bool = False,
 ) -> go.Figure:
-    """Chart 5: two stacked panels (net buffer; resources vs. outflows) across parallel shocks."""
+    """Two stacked panels: net buffer, then liquid resources vs. cash outflows, across parallel shocks."""
     df = sweep_result.to_dataframe()
     x = df["shock_pct"] * 100
     fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.09, row_heights=[0.58, 0.42],
-        subplot_titles=(
-            "Net Liquidity Buffer ($M) Across Parallel Price Shocks",
-            "Available Liquid Resources vs. Total Cash Outflows ($M)",
-        ),
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.12, row_heights=[0.56, 0.44],
+        subplot_titles=("Net liquidity buffer (USD M)", "Liquid resources vs. cash outflows (USD M)"),
     )
-    fig.add_trace(
-        go.Scatter(
-            x=x, y=df["net_liquidity_buffer"] / 1e6, mode="lines+markers", name="Net Liquidity Buffer ($M)",
-            line=dict(color=COLORS["blue"], width=2.5), marker=dict(size=5),
-            customdata=df["regime"], hovertemplate="Net buffer: $%{y:,.2f}M (%{customdata})<extra></extra>",
-        ),
-        row=1, col=1,
-    )
-    for x0, x1, regime in _regime_segments(sweep_result):
-        _, _, bg_rgba, _ = REGIME_STYLES[regime]
-        fig.add_vrect(x0=x0, x1=x1, fillcolor=bg_rgba, line_width=0, layer="below", row=1, col=1)
-    fig.add_hline(y=0.0, line=dict(color=COLORS["red"], dash="dash", width=1.5), row=1, col=1,
-                  annotation_text="$0M liquidity exhaustion", annotation_position="bottom left",
-                  annotation_font=dict(color=COLORS["red"], size=10))
+    fig.add_trace(_buffer_trace(df), row=1, col=1)
+    _add_regime_bands(fig, sweep_result, row=1)
+    fig.add_hline(y=0.0, line=dict(color=BREACH, dash="dash", width=1), row=1, col=1)
     if not is_custom_per_commodity:
-        fig.add_vline(x=active_shock_pct * 100, line=dict(color=COLORS["text"], width=1.5), row=1, col=1,
-                      annotation_text=f"Active {active_shock_pct:+.0%}", annotation_position="top left",
-                      annotation_font=dict(color=COLORS["text"], size=11))
+        fig.add_vline(x=active_shock_pct * 100, line=dict(color=COLORS["accent"], width=1.5), row=1, col=1)
+        _note(fig, active_shock_pct * 100, f"Active {active_shock_pct:+.0%}", COLORS["accent"], top=True, row=1)
     if sweep_result.upside_squeeze_breakeven_pct is not None:
         be = sweep_result.upside_squeeze_breakeven_pct * 100
-        fig.add_vline(x=be, line=dict(color=COLORS["red"], dash="dot", width=1.2), row=1, col=1,
-                      annotation_text=f"Squeeze BE {be:+.2f}%", annotation_position="bottom right",
-                      annotation_font=dict(color=COLORS["red"], size=10))
+        fig.add_vline(x=be, line=dict(color=BREACH, dash="dot", width=1), row=1, col=1)
+        _note(fig, be, f"Squeeze {be:+.2f}%", BREACH, top=False, align="right", row=1)
     if sweep_result.downside_deficiency_breakeven_pct is not None:
         be = sweep_result.downside_deficiency_breakeven_pct * 100
-        fig.add_vline(x=be, line=dict(color=COLORS["orange"], dash="dot", width=1.2), row=1, col=1,
-                      annotation_text=f"Deficiency BE {be:+.2f}%", annotation_position="bottom left",
-                      annotation_font=dict(color=COLORS["orange"], size=10))
+        fig.add_vline(x=be, line=dict(color=CAUTION, dash="dot", width=1), row=1, col=1)
+        _note(fig, be, f"Deficiency {be:+.2f}%", CAUTION, top=False, align="right", row=1)
     fig.add_trace(
-        go.Scatter(
-            x=x, y=df["total_liquid_resources"] / 1e6, mode="lines", name="Total Liquid Resources ($M)",
-            line=dict(color=COLORS["emerald"], width=2),
-            hovertemplate="Resources: $%{y:,.2f}M<extra></extra>",
-        ),
+        go.Scatter(x=x, y=df["total_liquid_resources"] / 1e6, mode="lines", name="Liquid resources",
+                   line=dict(color=HEALTHY, width=1.8),
+                   hovertemplate="Resources $%{y:,.2f}M<extra></extra>"),
         row=2, col=1,
     )
     fig.add_trace(
-        go.Scatter(
-            x=x, y=df["total_cash_outflows"] / 1e6, mode="lines", name="Total Cash Outflows ($M)",
-            line=dict(color=COLORS["red"], width=2), fill="tonexty", fillcolor="rgba(239, 68, 68, 0.10)",
-            hovertemplate="Outflows: $%{y:,.2f}M<extra></extra>",
-        ),
+        go.Scatter(x=x, y=df["total_cash_outflows"] / 1e6, mode="lines", name="Cash outflows",
+                   line=dict(color=BREACH, width=1.8), fill="tonexty", fillcolor="rgba(153, 27, 27, 0.06)",
+                   hovertemplate="Outflows $%{y:,.2f}M<extra></extra>"),
         row=2, col=1,
     )
-    apply_institutional_layout(fig, "41-Point Margin-Trap Liquidity Stress Sweep", height=680)
+    apply_institutional_layout(fig, height=560)
     for subplot_title in fig.layout.annotations[:2]:
-        subplot_title.font = dict(color=COLORS["text"], size=13)
-    fig.update_xaxes(ticksuffix="%", row=2, col=1, title=dict(text="Parallel Price Shock (%)"))
-    fig.update_xaxes(ticksuffix="%", row=1, col=1)
-    fig.update_yaxes(title=dict(text="$M"), row=1, col=1)
-    fig.update_yaxes(title=dict(text="$M"), row=2, col=1)
+        subplot_title.font = dict(color=COLORS["text_secondary"], size=12, family=FONT_SANS)
+        subplot_title.x = 0.0
+        subplot_title.xanchor = "left"
+    fig.update_layout(margin=dict(t=28, b=48), legend=dict(y=0.42, yanchor="bottom", x=1.0, xanchor="right"))
+    fig.update_xaxes(ticksuffix="%", dtick=5)
+    fig.update_xaxes(title=dict(text="Parallel price shock to all four commodities (%)",
+                                font=dict(size=11, color=COLORS["muted"])), row=2, col=1)
+    fig.update_yaxes(tickprefix="$")
+    fig.data[0].showlegend = False
     return fig
 
 
 def build_active_shock_sources_uses_chart(stress_result: StressScenarioResult, terms: FacilityTerms) -> go.Figure:
-    """Chart 6: liquidity sources minus cash uses bridging to the net liquidity buffer."""
+    """Liquidity sources minus cash uses, bridging to the net liquidity buffer for the active shock."""
     steps = [
-        ("Unrestricted Cash", terms.unrestricted_cash),
-        ("Shocked Headroom", stress_result.shocked_headroom),
-        ("Futures VM Inflow", stress_result.vm_inflow),
-        ("Futures VM Call", -stress_result.vm_outflow),
-        ("IM Step-Up Call", -stress_result.im_addon_outflow),
-        ("BB Deficiency Cure", -stress_result.bb_deficiency_cure),
+        ("Unrestricted cash", terms.unrestricted_cash),
+        ("Shocked headroom", stress_result.shocked_headroom),
+        ("Futures VM inflow", stress_result.vm_inflow),
+        ("Futures VM call", -stress_result.vm_outflow),
+        ("IM step-up call", -stress_result.im_addon_outflow),
+        ("BB deficiency cure", -stress_result.bb_deficiency_cure),
     ]
-    labels = [_wrap_label(s[0]) for s in steps] + ["Net Liquidity<br>Buffer"]
+    labels = [_wrap_label(s[0]) for s in steps] + ["Net liquidity<br>buffer"]
     amounts = [s[1] for s in steps] + [stress_result.net_liquidity_buffer]
     fig = go.Figure(
         go.Waterfall(
@@ -292,143 +336,58 @@ def build_active_shock_sources_uses_chart(stress_result: StressScenarioResult, t
             measure=["relative"] * len(steps) + ["total"],
             y=[_m(a) for a in amounts[:-1]] + [None],
             text=[_mtext(a) if (abs(a) >= 5e3 or i == len(amounts) - 1) else "" for i, a in enumerate(amounts)],
-            textposition="outside",
-            textfont=dict(color=COLORS["text"]),
-            connector=dict(line=dict(color=COLORS["slate"], width=1, dash="dot")),
-            increasing=dict(marker=dict(color=COLORS["emerald"])),
-            decreasing=dict(marker=dict(color=COLORS["red"])),
+            textposition="outside", cliponaxis=False,
+            textfont=dict(color=COLORS["text"], size=11),
+            connector=dict(line=dict(color=COLORS["neutral_fill"], width=1)),
+            increasing=dict(marker=dict(color=COLORS["accent_hover"])),
+            decreasing=dict(marker=dict(color=BREACH)),
             totals=dict(marker=dict(
-                color=COLORS["blue"] if stress_result.net_liquidity_buffer >= 0 else COLORS["red"]
+                color=COLORS["accent"] if stress_result.net_liquidity_buffer >= 0 else BREACH
             )),
             customdata=[_mtext(a) for a in amounts],
             hovertemplate="%{x}<br>%{customdata}<extra></extra>",
-            name="Sources vs. Uses",
+            name="Sources and uses",
         )
     )
-    fig.add_hline(y=0.0, line=dict(color=COLORS["slate"], width=1))
-    apply_institutional_layout(
-        fig, f"Active Shock Cash Sources vs. Uses ({str(stress_result.regime).replace('_', ' ').title()})",
-        height=440, yaxis_title="$M",
-    )
-    fig.update_layout(showlegend=False, hovermode="closest")
-    fig.update_xaxes(tickangle=0)
+    fig.add_hline(y=0.0, line=dict(color=COLORS["border"], width=1))
+    apply_institutional_layout(fig, height=360, yaxis_title="USD millions")
+    fig.update_layout(showlegend=False, hovermode="closest", margin=dict(t=24, b=56))
+    fig.update_xaxes(tickangle=0, tickfont=dict(size=11, color=COLORS["text_secondary"]))
+    fig.update_yaxes(tickprefix="$")
     return fig
 
 
-REGIME_ORDER: tuple[LiquidityRegime, ...] = (
-    LiquidityRegime.HEALTHY,
-    LiquidityRegime.MARGIN_TRAP_WARNING,
-    LiquidityRegime.BB_DEFICIENCY_WARNING,
-    LiquidityRegime.CRITICAL_SQUEEZE,
-)
-
-
-def build_facility_gauge(bb_result: BorrowingBaseResult) -> go.Figure:
-    """Availability usage gauge: drawn revolver as a share of min(facility limit, borrowing base)."""
-    availability = min(bb_result.facility_limit, bb_result.final_borrowing_base)
-    usage = bb_result.drawn_revolver / availability * 100 if availability > 0 else 100.0
-    fig = go.Figure(
-        go.Indicator(
-            mode="gauge+number",
-            value=usage,
-            number=dict(suffix="%", valueformat=".1f", font=dict(size=40, color=COLORS["text"], family=FONT_STACK)),
-            gauge=dict(
-                axis=dict(range=[0, 110], tickcolor=COLORS["slate"], tickfont=dict(color=COLORS["muted"])),
-                bar=dict(color=COLORS["blue"], thickness=0.28),
-                bgcolor="rgba(15, 23, 42, 0.6)",
-                borderwidth=0,
-                steps=[
-                    dict(range=[0, 85], color="rgba(16, 185, 129, 0.22)"),
-                    dict(range=[85, 95], color="rgba(245, 158, 11, 0.26)"),
-                    dict(range=[95, 110], color="rgba(239, 68, 68, 0.28)"),
-                ],
-                threshold=dict(line=dict(color=COLORS["red"], width=3), thickness=0.8, value=100),
-            ),
-        )
-    )
-    apply_institutional_layout(fig, "Availability Usage", height=320)
-    fig.update_layout(margin=dict(l=30, r=30, t=60, b=10))
-    fig.add_annotation(
-        x=0.5, y=-0.02, xref="paper", yref="paper", showarrow=False,
-        text=f"{_mtext(bb_result.drawn_revolver)} drawn of {_mtext(availability)} available",
-        font=dict(color=COLORS["muted"], size=12),
-    )
-    return fig
-
-
-def build_collateral_mix_donut(bb_result: BorrowingBaseResult) -> go.Figure:
-    """Eligible collateral composition: each inventory line plus capped eligible receivables."""
-    labels = [f"{i.name}" for i in bb_result.inventory_items] + ["Receivables (capped)"]
-    values = [i.eligible_collateral / 1e6 for i in bb_result.inventory_items] + [
-        bb_result.final_eligible_receivables / 1e6
-    ]
-    colors = [COMMODITY_COLORS.get(i.ticker, COLORS["blue"]) for i in bb_result.inventory_items] + [COLORS["blue"]]
-    fig = go.Figure(
-        go.Pie(
-            labels=labels, values=values, hole=0.62, sort=False,
-            marker=dict(colors=colors, line=dict(color=COLORS["bg"], width=2)),
-            textinfo="percent", textfont=dict(color=COLORS["bg"], size=11),
-            hovertemplate="%{label}<br>$%{value:,.2f}M (%{percent})<extra></extra>",
-        )
-    )
-    apply_institutional_layout(fig, "Eligible Collateral Mix", height=320)
-    fig.update_layout(
-        margin=dict(l=10, r=10, t=56, b=10), showlegend=True, hovermode="closest",
-        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.02, yanchor="top", font=dict(size=11)),
-        annotations=[dict(text=f"<b>{_mtext(bb_result.final_borrowing_base)}</b><br>"
-                                f"<span style='font-size:11px;color:{COLORS['muted']}'>Borrowing Base</span>",
-                          x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False,
-                          font=dict(size=17, color=COLORS["text"]))],
-    )
-    return fig
-
-
-def build_regime_ribbon(sweep_result: StressSweepResult, active_shock_pct: float | None) -> go.Figure:
-    """One-row regime map across the 41-point parallel sweep."""
-    codes = {r: i for i, r in enumerate(REGIME_ORDER)}
-    x = [p.shock_pct * 100 for p in sweep_result.points]
-    z = [[codes[p.regime] for p in sweep_result.points]]
-    text = [[f"{p.shock_pct:+.0%}: {p.regime} · buffer {_mtext(p.net_liquidity_buffer)}" for p in sweep_result.points]]
-    scale = []
-    for i, r in enumerate(REGIME_ORDER):
-        color = REGIME_STYLES[r][1]
-        scale += [[i / 4, color], [(i + 1) / 4, color]]
-    fig = go.Figure(
-        go.Heatmap(
-            x=x, y=[""], z=z, zmin=-0.5, zmax=3.5, colorscale=scale, showscale=False, xgap=2,
-            text=text, hovertemplate="%{text}<extra></extra>", opacity=0.85,
-        )
-    )
-    if active_shock_pct is not None:
-        fig.add_vline(x=active_shock_pct * 100, line=dict(color=COLORS["text"], width=2.5))
-    apply_institutional_layout(fig, "Regime Map Across Parallel Price Shocks", height=170)
-    fig.update_layout(margin=dict(l=20, r=20, t=50, b=30), hovermode="closest")
-    fig.update_xaxes(ticksuffix="%", dtick=5, showgrid=False)
-    fig.update_yaxes(showgrid=False, showticklabels=False)
-    for r in REGIME_ORDER:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=str(r).replace("_", " ").title().replace("Bb ", "BB "),
-                                 marker=dict(size=10, color=REGIME_STYLES[r][1], symbol="square")))
-    fig.update_layout(showlegend=True, legend=dict(orientation="h", y=1.25, yanchor="bottom", x=1.0,
-                                                   xanchor="right", font=dict(size=11)))
-    return fig
+def _adverse_scale(zmin: float, zmax: float) -> list[list]:
+    """Neutral for comfortable buffers, sand to amber approaching zero, crimson below zero."""
+    span = (zmax - zmin) or 1.0
+    f0 = min(max((0.0 - zmin) / span, 0.0), 1.0)
+    if f0 <= 0.0:
+        return [[0.0, "#D97706"], [0.35, "#FDE68A"], [1.0, "#F8FAFC"]]
+    if f0 >= 1.0:
+        return [[0.0, "#7F1D1D"], [1.0, "#991B1B"]]
+    upper = f0 + (1.0 - f0) * 0.4
+    return [[0.0, "#7F1D1D"], [f0 * 0.5, "#991B1B"], [f0, "#D97706"], [upper, "#FDE68A"], [1.0, "#F8FAFC"]]
 
 
 def build_shock_heatmap(grid: ShockGridResult, active_point: tuple[float, float] | None = None) -> go.Figure:
-    """Metals vs. softs/lumber shock grid of net liquidity buffer with the $0 exhaustion contour."""
+    """Metals vs. softs/lumber shock grid of net liquidity buffer with the $0 contour."""
     x = [v * 100 for v in grid.softs_axis]
     y = [v * 100 for v in grid.metals_axis]
     z = [[v / 1e6 for v in row] for row in grid.net_buffer]
-    custom = [[[grid.regime[i][j], grid.shocked_bb[i][j] / 1e6] for j in range(len(x))] for i in range(len(y))]
-    bound = max(abs(min(min(r) for r in z)), abs(max(max(r) for r in z)), 1.0)
+    custom = [[[regime_label(grid.regime[i][j]), grid.shocked_bb[i][j] / 1e6] for j in range(len(x))]
+              for i in range(len(y))]
+    zmin = min(min(r) for r in z)
+    zmax = max(max(r) for r in z)
     fig = go.Figure(
         go.Heatmap(
-            x=x, y=y, z=z, zmid=0.0, zmin=-bound, zmax=bound, customdata=custom, xgap=1, ygap=1,
-            colorscale=[[0.0, "#991B1B"], [0.35, "#EF4444"], [0.5, "#1E293B"], [0.65, "#0EA5E9"], [1.0, "#10B981"]],
+            x=x, y=y, z=z, zmin=zmin, zmax=zmax, customdata=custom, xgap=1, ygap=1,
+            colorscale=_adverse_scale(zmin, zmax),
             text=[[f"{v:+.1f}" for v in row] for row in z], texttemplate="%{text}",
-            textfont=dict(size=9, color="#E2E8F0"),
-            colorbar=dict(title=dict(text="Net buffer $M", font=dict(color=COLORS["muted"])),
-                          tickfont=dict(color=COLORS["muted"]), outlinewidth=0, thickness=12),
-            hovertemplate=("Metals %{y:+.1f}% · Softs/Lumber %{x:+.1f}%<br>Net buffer $%{z:,.2f}M"
+            textfont=dict(size=10, family=FONT_SANS),
+            colorbar=dict(title=dict(text="Net buffer<br>(USD M)", font=dict(size=11, color=COLORS["muted"])),
+                          tickfont=dict(size=11, color=COLORS["muted"]), tickprefix="$", outlinewidth=0,
+                          thickness=10, len=0.9),
+            hovertemplate=("Gold & copper %{y:+.1f}%, lumber & cocoa %{x:+.1f}%<br>Net buffer $%{z:,.2f}M"
                            "<br>Shocked BB $%{customdata[1]:,.2f}M<br>%{customdata[0]}<extra></extra>"),
         )
     )
@@ -436,56 +395,54 @@ def build_shock_heatmap(grid: ShockGridResult, active_point: tuple[float, float]
         go.Contour(
             x=x, y=y, z=z, showscale=False, hoverinfo="skip", name="$0 buffer",
             contours=dict(start=0.0, end=0.0, size=1.0, coloring="lines"),
-            line=dict(color=COLORS["text"], width=2, dash="dash"),
+            line=dict(color=COLORS["text"], width=1.5, dash="dash"),
         )
     )
     if active_point is not None:
         fig.add_trace(
             go.Scatter(
                 x=[active_point[1] * 100], y=[active_point[0] * 100], mode="markers", name="Active scenario",
-                marker=dict(size=16, color="rgba(0, 0, 0, 0)", line=dict(color=COLORS["text"], width=2.5),
-                            symbol="circle"),
+                marker=dict(size=15, color="rgba(0, 0, 0, 0)", line=dict(color=COLORS["accent"], width=2.5)),
                 hoverinfo="skip",
             )
         )
-    apply_institutional_layout(fig, "Net Liquidity Buffer: Metals vs. Softs & Lumber Shocks ($M)", height=600,
-                               yaxis_title="Gold & Copper shock (%)", xaxis_title="Lumber & Cocoa shock (%)")
-    fig.update_layout(hovermode="closest", showlegend=False, plot_bgcolor="rgba(0, 0, 0, 0)")
-    fig.update_xaxes(ticksuffix="%", showgrid=False, dtick=5)
-    fig.update_yaxes(ticksuffix="%", showgrid=False, dtick=5)
+    apply_institutional_layout(fig, height=600, yaxis_title="Gold & copper shock (%)",
+                               xaxis_title="Lumber & cocoa shock (%)")
+    fig.update_layout(hovermode="closest", showlegend=False, margin=dict(t=12, l=64))
+    fig.update_xaxes(ticksuffix="%", dtick=5, showline=False, ticks="")
+    fig.update_yaxes(ticksuffix="%", dtick=5, showgrid=False)
     return fig
 
 
 def build_mc_distribution_chart(mc: MonteCarloResult) -> go.Figure:
-    """Histogram of simulated net liquidity buffers with LaR / ES / zero markers."""
+    """Histogram of simulated net liquidity buffers; paths at or below the 5th percentile shaded as the tail."""
     vals = [v / 1e6 for v in mc.net_buffer_samples]
-    lo, hi = min(vals), max(vals)
-    size = max((hi - lo) / 60.0, 0.01)
-    bins = dict(start=lo - size, end=hi + size, size=size)
-    neg = [v for v in vals if v < 0.0]
-    pos = [v for v in vals if v >= 0.0]
+    p05 = mc.p05_net_buffer / 1e6
+    lo, hi = min(vals + [0.0]), max(vals)
+    size = max((max(vals) - min(vals)) / 70.0, 0.01)
+    bins = dict(start=min(vals) - size, end=hi + size, size=size)
+    body = [v for v in vals if v > p05]
+    tail = [v for v in vals if v <= p05]
     fig = go.Figure()
-    fig.add_trace(go.Histogram(x=pos, xbins=bins, name="Buffer ≥ $0", marker=dict(color=COLORS["blue"]),
+    fig.add_trace(go.Histogram(x=body, xbins=bins, name="Simulated paths", marker=dict(color=COLORS["accent"]),
                                opacity=0.85, hovertemplate="$%{x:.2f}M: %{y} paths<extra></extra>"))
-    if neg:
-        fig.add_trace(go.Histogram(x=neg, xbins=bins, name="Buffer < $0 (squeeze)", marker=dict(color=COLORS["red"]),
-                                   opacity=0.9, hovertemplate="$%{x:.2f}M: %{y} paths<extra></extra>"))
+    fig.add_trace(go.Histogram(x=tail, xbins=bins, name="Worst 5% of paths", marker=dict(color=BREACH),
+                               opacity=0.75, hovertemplate="$%{x:.2f}M: %{y} paths<extra></extra>"))
     markers = [
-        (0.0, "$0", COLORS["red"], "solid"),
-        (mc.p05_net_buffer / 1e6, f"LaR 95% {_mtext(mc.p05_net_buffer)}", COLORS["amber"], "dash"),
-        (mc.p01_net_buffer / 1e6, f"LaR 99% {_mtext(mc.p01_net_buffer)}", COLORS["orange"], "dot"),
-        (mc.mean_net_buffer / 1e6, f"Mean {_mtext(mc.mean_net_buffer)}", COLORS["emerald"], "dash"),
+        (mc.p01_net_buffer / 1e6, f"LaR 99%: {_mtext(mc.p01_net_buffer)}", BREACH, "dash", 1.0, "right"),
+        (p05, f"LaR 95%: {_mtext(mc.p05_net_buffer)}", BREACH, "dash", 0.92, "left"),
+        (mc.mean_net_buffer / 1e6, f"Mean: {_mtext(mc.mean_net_buffer)}", COLORS["muted"], "dot", 1.0, "right"),
+        (0.0, "$0 buffer", COLORS["text"], "solid", 0.84, "left"),
     ]
-    for i, (xv, label, color, dash) in enumerate(markers):
-        fig.add_vline(x=xv, line=dict(color=color, dash=dash, width=1.6), annotation_text=label,
-                      annotation_position="top right" if i % 2 == 0 else "top left",
-                      annotation_font=dict(color=color, size=11), annotation_yshift=-18 * (i // 2))
-    apply_institutional_layout(
-        fig, f"Simulated {mc.horizon_days}-Day Net Liquidity Buffer ({mc.n_sims:,} correlated paths)",
-        height=460, yaxis_title="Paths", xaxis_title="Net liquidity buffer ($M)",
-    )
-    fig.update_layout(barmode="overlay", hovermode="closest")
-    fig.update_xaxes(tickprefix="$", ticksuffix="M")
+    for xv, label, color, dash, ypos, side in markers:
+        fig.add_vline(x=xv, line=dict(color=color, dash=dash, width=1.2))
+        fig.add_annotation(x=xv, y=ypos, xref="x", yref="paper", text=label, showarrow=False,
+                           xanchor="left" if side == "left" else "right", xshift=4 if side == "left" else -4,
+                           yanchor="top", font=dict(size=11, color=color), bgcolor="rgba(255, 255, 255, 0.85)")
+    apply_institutional_layout(fig, height=400, yaxis_title="Number of paths",
+                               xaxis_title=f"Net liquidity buffer after {mc.horizon_days} trading days (USD M)")
+    fig.update_layout(barmode="overlay", hovermode="closest", margin=dict(t=36))
+    fig.update_xaxes(tickprefix="$", ticksuffix="M", range=[lo - size * 2, hi + size * 2])
     return fig
 
 
@@ -495,16 +452,16 @@ def build_correlation_heatmap(mc: MonteCarloResult, specs: Mapping[str, Commodit
     fig = go.Figure(
         go.Heatmap(
             x=names, y=names, z=z, zmin=-1, zmax=1, xgap=2, ygap=2,
-            colorscale=[[0.0, "#EF4444"], [0.5, "#1E293B"], [1.0, "#38BDF8"]],
+            colorscale=[[0.0, "#9A3412"], [0.5, "#FFFFFF"], [1.0, COLORS["accent"]]],
             text=[[f"{v:+.2f}" for v in row] for row in z], texttemplate="%{text}",
-            textfont=dict(color=COLORS["text"], size=13), showscale=False,
+            textfont=dict(size=12, family=FONT_SANS), showscale=False,
             hovertemplate="%{y} / %{x}: %{z:+.3f}<extra></extra>",
         )
     )
-    apply_institutional_layout(fig, "Daily Return Correlation (Lookback)", height=360)
-    fig.update_layout(hovermode="closest", margin=dict(l=70, r=20, t=60, b=40), plot_bgcolor="rgba(0, 0, 0, 0)")
+    apply_institutional_layout(fig, height=300)
+    fig.update_layout(hovermode="closest", margin=dict(l=64, r=8, t=8, b=32))
     fig.update_yaxes(autorange="reversed", showgrid=False)
-    fig.update_xaxes(showgrid=False, showline=False)
+    fig.update_xaxes(showline=False, ticks="")
     return fig
 
 
@@ -512,62 +469,67 @@ def build_replay_chart(replay: HistoricalReplayResult, terms: FacilityTerms) -> 
     """Three stacked panels: BB vs. limit/drawn, daily futures VM, 5-day stressed liquidity buffer."""
     df = replay.frame
     fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.07, row_heights=[0.42, 0.29, 0.29],
+        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.42, 0.29, 0.29],
         subplot_titles=(
-            "Borrowing Base vs. Facility Limit & Drawn Revolver ($M)",
-            "Daily Futures Variation Margin ($M, + inflow / − call)",
-            "5-Day Stressed Liquidity Buffer ($M)",
+            "Borrowing base vs. facility limit and drawn balance (USD M)",
+            "Daily futures variation margin (USD M, positive = inflow)",
+            "5-day stressed liquidity buffer (USD M)",
         ),
     )
     bb_m = df["borrowing_base"] / 1e6
     y_lo = min(float(bb_m.min()), terms.drawn_revolver / 1e6) * 0.97
     y_hi = max(float(bb_m.max()), terms.facility_limit / 1e6) * 1.02
     fig.add_trace(
-        go.Scatter(x=df.index, y=bb_m, name="Borrowing Base", mode="lines",
-                   line=dict(color=COLORS["blue"], width=2.2),
-                   hovertemplate="BB $%{y:,.2f}M<extra></extra>"),
+        go.Scatter(x=df.index, y=bb_m, name="Borrowing base", mode="lines",
+                   line=dict(color=PORTFOLIO_COLOR, width=1.8), hovertemplate="BB $%{y:,.2f}M<extra></extra>"),
         row=1, col=1,
     )
-    fig.add_hrect(y0=y_lo, y1=terms.drawn_revolver / 1e6, fillcolor="rgba(239, 68, 68, 0.10)", line_width=0,
+    fig.add_hrect(y0=y_lo, y1=terms.drawn_revolver / 1e6, fillcolor=STATUS["breach"][1], line_width=0,
                   layer="below", row=1, col=1)
-    fig.add_hline(y=terms.facility_limit / 1e6, line=dict(color=COLORS["emerald"], dash="dash", width=1.3),
-                  annotation_text="Facility limit", annotation_position="top left",
-                  annotation_font=dict(color=COLORS["emerald"], size=10), row=1, col=1)
-    fig.add_hline(y=terms.drawn_revolver / 1e6, line=dict(color=COLORS["amber"], dash="dash", width=1.3),
-                  annotation_text="Drawn revolver (deficiency below)", annotation_position="bottom left",
-                  annotation_font=dict(color=COLORS["amber"], size=10), row=1, col=1)
+    fig.add_hline(y=terms.facility_limit / 1e6, line=dict(color=COLORS["reference"], dash="dash", width=1.2),
+                  row=1, col=1)
+    fig.add_hline(y=terms.drawn_revolver / 1e6, line=dict(color=BREACH, dash="dot", width=1.2), row=1, col=1)
+    fig.add_annotation(x=0, xref="x domain", y=terms.facility_limit / 1e6, yref="y", xanchor="left",
+                       yanchor="bottom", showarrow=False, text="Facility limit",
+                       font=dict(size=10, color=COLORS["muted"]))
+    fig.add_annotation(x=0, xref="x domain", y=terms.drawn_revolver / 1e6, yref="y", xanchor="left",
+                       yanchor="top", showarrow=False, text="Drawn balance (deficiency below)",
+                       font=dict(size=10, color=BREACH))
     vm = df["daily_vm"] / 1e6
     fig.add_trace(
-        go.Bar(x=df.index, y=vm, name="Daily VM", marker=dict(color=[COLORS["emerald"] if v >= 0 else COLORS["red"]
-                                                                     for v in vm]),
+        go.Bar(x=df.index, y=vm, name="Daily VM",
+               marker=dict(color=[HEALTHY if v >= 0 else BREACH for v in vm], opacity=0.85),
                hovertemplate="VM $%{y:+,.2f}M<extra></extra>"),
         row=2, col=1,
     )
     fig.add_trace(
         go.Scatter(x=df.index, y=df["rolling_vm"] / 1e6, name="5-day net VM", mode="lines",
-                   line=dict(color=COLORS["amber"], width=1.6), hovertemplate="5d VM $%{y:+,.2f}M<extra></extra>"),
+                   line=dict(color=COLORS["muted"], width=1.2), hovertemplate="5-day VM $%{y:+,.2f}M<extra></extra>"),
         row=2, col=1,
     )
     buf = df["stressed_buffer"] / 1e6
     fig.add_trace(
         go.Scatter(x=df.index, y=buf.clip(lower=0.0), mode="lines", line=dict(width=0), fill="tozeroy",
-                   fillcolor="rgba(16, 185, 129, 0.25)", showlegend=False, hoverinfo="skip"),
+                   fillcolor="rgba(22, 101, 52, 0.10)", showlegend=False, hoverinfo="skip"),
         row=3, col=1,
     )
     fig.add_trace(
         go.Scatter(x=df.index, y=buf.clip(upper=0.0), mode="lines", line=dict(width=0), fill="tozeroy",
-                   fillcolor="rgba(239, 68, 68, 0.35)", showlegend=False, hoverinfo="skip"),
+                   fillcolor="rgba(153, 27, 27, 0.18)", showlegend=False, hoverinfo="skip"),
         row=3, col=1,
     )
     fig.add_trace(
-        go.Scatter(x=df.index, y=buf, name="Stressed buffer", mode="lines", line=dict(color=COLORS["text"], width=1.6),
+        go.Scatter(x=df.index, y=buf, name="Stressed buffer", mode="lines", line=dict(color=PORTFOLIO_COLOR, width=1.4),
                    hovertemplate="Buffer $%{y:+,.2f}M<extra></extra>"),
         row=3, col=1,
     )
-    fig.add_hline(y=0.0, line=dict(color=COLORS["red"], width=1, dash="dash"), row=3, col=1)
-    apply_institutional_layout(fig, "Historical Replay of Today's Book", height=820)
-    fig.update_yaxes(range=[y_lo, y_hi], row=1, col=1)
+    fig.add_hline(y=0.0, line=dict(color=BREACH, width=1, dash="dash"), row=3, col=1)
+    apply_institutional_layout(fig, height=760)
     for subplot_title in fig.layout.annotations[:3]:
-        subplot_title.font = dict(color=COLORS["text"], size=13)
-    fig.update_layout(hovermode="x unified", legend=dict(y=-0.07))
+        subplot_title.font = dict(color=COLORS["text_secondary"], size=12, family=FONT_SANS)
+        subplot_title.x = 0.0
+        subplot_title.xanchor = "left"
+    fig.update_layout(hovermode="x unified", showlegend=False, margin=dict(t=28, b=32))
+    fig.update_yaxes(range=[y_lo, y_hi], row=1, col=1)
+    fig.update_yaxes(tickprefix="$")
     return fig

@@ -23,7 +23,7 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 | `core/borrowing_base.py` | AR eligibility, cap solver (active-set + sorted-suffix closed form), waterfall |
 | `core/stress_engine.py` | Stress scenario/sweep, regime classifier, breakevens, certificate CSV/JSON |
 | `core/scenario_analytics.py` | Vectorized engine, metals×softs shock grid, Monte Carlo LaR, historical replay |
-| `ui/theme.py` | Color tokens, CSS, `apply_institutional_layout`, `PLOTLY_CONFIG`, formatters |
+| `ui/theme.py` | Design system: light institutional tokens (mirrored in `.streamlit/config.toml`), semantic STATUS colours, commodity palette, Plotly layout, minimal CSS for custom HTML and `panel_*` containers |
 | `ui/charts.py` | The original six Plotly figures plus gauge, donut, regime ribbon, heatmap, MC, correlation, replay |
 | `ui/cache.py` | `st.cache_data` wrappers (live TTL 900s, scenario suite, Monte Carlo) and data-status label |
 | `ui/components.py` | Hero, KPI cards with sparklines, regime banner, insights, validated editors, exports, audits |
@@ -81,7 +81,9 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
   checks it on random mixed shocks. If you change any stress formula, change both.
 - Custom HTML goes through `_html()` / single-line strings so Markdown never renders indented HTML as code.
 
-- UI copy and docs: plain, factual, no em-dashes.
+- UI copy and docs: plain, factual, sentence case, no em-dashes or emojis.
+- Visual changes go through `ui/theme.py` tokens; risk colours (`STATUS`) only for states the model defines.
+  Chart titles live in the surrounding `panel()` heading, not inside the Plotly figure.
 
 **Numerics**
 - Sweep grid `np.round(np.linspace(-0.20, 0.20, 41), 6)`; IM trigger uses `>= trigger - 1e-9`.

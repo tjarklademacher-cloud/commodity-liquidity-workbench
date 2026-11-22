@@ -60,13 +60,13 @@ def test_cached_monte_carlo_matches_direct(market, positions, receivables, terms
 
 
 def test_market_data_status_labels(market):
-    assert market_data_status(market) == ("Bundled sample data", "blue")
+    assert market_data_status(market) == ("Bundled sample data", "neutral")
     live = market.model_copy(update={"source_label": "Live Yahoo Finance (yfinance)"})
-    assert market_data_status(live) == ("Live market data", "emerald")
+    assert market_data_status(live) == ("Live market data", "neutral")
     custom = market.model_copy(update={"source_label": "Custom CSV Upload"})
     assert market_data_status(custom)[0] == "Uploaded CSV data"
     fallback = market.model_copy(update={"used_fallback": True, "source_label": "Calibrated Sample (Live Fallback)"})
-    assert market_data_status(fallback) == ("Bundled data (live feed unavailable)", "amber")
+    assert market_data_status(fallback) == ("Bundled data (live feed unavailable)", "caution")
 
 
 def test_cached_live_market_falls_back_offline(monkeypatch):
@@ -79,7 +79,7 @@ def test_cached_live_market_falls_back_offline(monkeypatch):
     cached_live_market.clear()
     assert result.used_fallback
     assert "simulated timeout" in result.status_message
-    assert market_data_status(result)[1] == "amber"
+    assert market_data_status(result)[1] == "caution"
     assert result.snapshot["GC=F"].spot_price == pytest.approx(2710.0)
 
 
