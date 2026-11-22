@@ -1,5 +1,7 @@
 # CLAUDE.md: Commodity Collateral & Liquidity Stress Workbench
 
+Full hand-over context (architecture, decisions, limitations, backlog): see `PROJECT_CONTEXT.md`.
+
 Streamlit + Plotly workbench for a commodity ABL facility: dynamic inventory haircuts, a fixed-point
 single-buyer concentration cap, a borrowing base certificate, and a 41-point "margin trap" liquidity sweep.
 
