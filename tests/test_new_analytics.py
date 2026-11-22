@@ -129,3 +129,102 @@ def test_crisis_replay_single_position(market, default_receivables, default_term
     last = res.frame.iloc[-1]
     expected_mtm = -1000.0 * market.snapshot["GC=F"].spot_price * last["move_GC=F"]
     assert max(last["vm_inflow"], last["vm_outflow"]) == pytest.approx(abs(expected_mtm), rel=1e-9)
+
+
+# ---- Margin financing line ---------------------------------------------------------------------------------
+
+def _with(terms, **kw):
+    from core.schemas import FacilityTerms
+    return FacilityTerms.model_validate({**terms.model_dump(), **kw})
+
+
+def test_margin_line_adds_funding_for_margin_calls_only(default_positions, default_receivables, snapshot,
+                                                        default_terms):
+    base = run_stress_scenario(default_positions, default_receivables, snapshot, default_terms, shock_pct=0.14)
+    lined = run_stress_scenario(default_positions, default_receivables, snapshot,
+                                _with(default_terms, margin_line_limit=5e6), shock_pct=0.14)
+    assert lined.margin_line_draw == pytest.approx(5e6)
+    assert lined.net_liquidity_buffer == pytest.approx(base.net_liquidity_buffer + 5e6)
+    huge = run_stress_scenario(default_positions, default_receivables, snapshot,
+                               _with(default_terms, margin_line_limit=1e9), shock_pct=0.14)
+    assert huge.margin_line_draw == pytest.approx(base.vm_outflow + base.im_addon_outflow)
+    assert str(huge.regime) == "HEALTHY"
+    crash = run_stress_scenario(default_positions, default_receivables, snapshot,
+                                _with(default_terms, margin_line_limit=1e9), shock_pct=-0.20)
+    assert crash.margin_line_draw == pytest.approx(crash.im_addon_outflow)
+    assert crash.bb_deficiency_cure > 0
+
+
+def test_margin_line_vectorized_matches_exact(default_positions, default_receivables, snapshot, default_terms):
+    from core.scenario_analytics import REGIME_CODES, evaluate_shock_matrix
+    terms = _with(default_terms, margin_line_limit=4e6)
+    rng = np.random.default_rng(5)
+    shocks = rng.uniform(-0.3, 0.3, size=(80, len(REQUIRED_TICKERS)))
+    out = evaluate_shock_matrix(default_positions, default_receivables, snapshot, terms, shocks)
+    for i, row in enumerate(shocks):
+        exact = run_stress_scenario(default_positions, default_receivables, snapshot, terms,
+                                    per_commodity_shocks=dict(zip(REQUIRED_TICKERS, row)))
+        assert out["net_liquidity_buffer"][i] == pytest.approx(exact.net_liquidity_buffer, abs=1e-4)
+        assert out["margin_line_draw"][i] == pytest.approx(exact.margin_line_draw, abs=1e-4)
+        assert str(REGIME_CODES[out["regime_code"][i]]) == str(exact.regime)
+
+
+# ---- Contingency funding plan -------------------------------------------------------------------------------
+
+def test_contingency_actions_restore_the_buffer(default_positions, default_receivables, snapshot, default_terms):
+    from core.contingency import build_contingency_plan
+    sweep = run_stress_sweep(default_positions, default_receivables, snapshot, default_terms)
+    target = {t: 0.14 for t in REQUIRED_TICKERS}
+    plan = build_contingency_plan(default_positions, default_receivables, snapshot, default_terms, sweep, target,
+                                  "Parallel +14%")
+    assert plan.shortfall == pytest.approx(1.79e6, abs=0.01e6)
+    by_key = {a.key: a for a in plan.actions}
+    cash = run_stress_scenario(default_positions, default_receivables, snapshot,
+                               _with(default_terms, unrestricted_cash=default_terms.unrestricted_cash + plan.shortfall),
+                               shock_pct=0.14)
+    assert cash.net_liquidity_buffer == pytest.approx(0.0, abs=1.0)
+    line = run_stress_scenario(default_positions, default_receivables, snapshot,
+                               _with(default_terms, margin_line_limit=by_key["margin_line"].required_usd),
+                               shock_pct=0.14)
+    assert line.net_liquidity_buffer >= -1.0
+    fac = run_stress_scenario(default_positions, default_receivables, snapshot,
+                              _with(default_terms, facility_limit=default_terms.facility_limit
+                                    + by_key["facility"].required_usd), shock_pct=0.14)
+    assert fac.net_liquidity_buffer >= -1.0
+    hedged_value = sum(p.hedged_qty * snapshot[p.ticker].spot_price for p in default_positions)
+    scale = 1.0 - by_key["hedges"].required_usd / hedged_value
+    cut = [InventoryPosition(ticker=p.ticker, physical_qty=p.physical_qty, hedged_qty=p.hedged_qty * scale)
+           for p in default_positions]
+    assert run_stress_scenario(cut, default_receivables, snapshot, default_terms,
+                               shock_pct=0.14).net_liquidity_buffer >= -1.0
+    feasible = [a.required_usd for a in plan.actions if a.feasible]
+    assert feasible == sorted(feasible)
+
+
+def test_contingency_no_shortfall_and_triggers(default_positions, default_receivables, snapshot, default_terms):
+    from core.contingency import build_contingency_plan
+    sweep = run_stress_sweep(default_positions, default_receivables, snapshot, default_terms)
+    plan = build_contingency_plan(default_positions, default_receivables, snapshot, default_terms, sweep,
+                                  {t: 0.0 for t in REQUIRED_TICKERS}, "No shock")
+    assert plan.shortfall == 0.0
+    assert next(a for a in plan.actions if a.key == "cash").required_usd == 0.0
+    levels = [t.shock_pct for t in plan.triggers]
+    assert levels == sorted(levels)
+    assert sweep.upside_squeeze_breakeven_pct in levels
+    assert sweep.downside_deficiency_breakeven_pct in levels
+
+
+def test_breaking_moves_bracket_the_crossing(default_positions, default_receivables, snapshot, default_terms):
+    from core.contingency import breaking_moves
+    moves = {m.ticker: m for m in breaking_moves(default_positions, default_receivables, snapshot, default_terms)}
+    gold = moves["GC=F"].squeeze_rally_pct
+    assert gold is not None
+    just_below = run_stress_scenario(default_positions, default_receivables, snapshot, default_terms,
+                                     per_commodity_shocks={"GC=F": gold - 0.01})
+    just_above = run_stress_scenario(default_positions, default_receivables, snapshot, default_terms,
+                                     per_commodity_shocks={"GC=F": gold + 0.01})
+    assert just_below.net_liquidity_buffer >= 0 > just_above.net_liquidity_buffer
+    fall = moves["GC=F"].deficiency_fall_pct
+    r = run_stress_scenario(default_positions, default_receivables, snapshot, default_terms,
+                            per_commodity_shocks={"GC=F": fall - 0.01})
+    assert r.bb_deficiency_cure > 0

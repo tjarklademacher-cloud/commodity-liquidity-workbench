@@ -8,6 +8,10 @@ audit rows) and the keyed `panel_*` containers that hold charts.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 
 import plotly.graph_objects as go
 import streamlit as st
@@ -64,6 +68,14 @@ COMMODITY_COLORS: dict[str, str] = {
 COMMODITY_DASH: dict[str, str] = {"GC=F": "solid", "HG=F": "dash", "LBR=F": "dot", "CC=F": "dashdot",
                                   "KC=F": "longdash", "SB=F": "longdashdot"}
 PORTFOLIO_COLOR = "#0F172A"
+
+HOUSE_NAME = "Lademacher Commodities"
+AUTHOR = {
+    "name": "Tjark Lademacher",
+    "bio": "Commodity trade finance and risk analytics",
+    "github": "https://github.com/tjarklademacher-cloud",
+    "repo": "https://github.com/tjarklademacher-cloud/commodity-liquidity-workbench",
+}
 
 FONT_SANS = "IBM Plex Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif"
 FONT_MONO = "IBM Plex Mono, SFMono-Regular, Menlo, Consolas, monospace"
@@ -222,10 +234,86 @@ def inject_custom_css() -> None:
 .badge {{ display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 4px;
   font-family: {FONT_SANS}; }}
 .provenance {{ font-size: 12px; color: {c["muted"]}; margin: -4px 0 12px 0; }}
+.author {{ font-size: 12px; color: {c["text_secondary"]}; line-height: 1.5; }}
+.author .name {{ font-weight: 600; color: {c["text"]}; font-size: 13px; }}
+.author a {{ color: {c["accent_hover"]}; text-decoration: none; }}
 </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+@dataclass(frozen=True)
+class DisplayCurrency:
+    """Reporting currency for outputs. The model and all inputs stay in USD; outputs divide by usd_per_unit."""
+
+    code: str = "USD"
+    symbol: str = "$"
+    usd_per_unit: float = 1.0
+    source: str = "model currency"
+    as_of: str = ""
+
+
+CURRENCY_SYMBOLS: dict[str, str] = {"USD": "$", "EUR": "\u20ac", "GBP": "\u00a3", "CHF": "CHF "}
+_CURRENCY: ContextVar[DisplayCurrency] = ContextVar("display_currency", default=DisplayCurrency())
+
+
+def set_display_currency(currency: DisplayCurrency) -> None:
+    _CURRENCY.set(currency)
+
+
+def display_currency() -> DisplayCurrency:
+    return _CURRENCY.get()
+
+
+@contextmanager
+def using_currency(currency: DisplayCurrency) -> Iterator[None]:
+    token = _CURRENCY.set(currency)
+    try:
+        yield
+    finally:
+        _CURRENCY.reset(token)
+
+
+def money_divisor() -> float:
+    """Divide a USD amount by this to get display-currency millions."""
+    return 1e6 * display_currency().usd_per_unit
+
+
+def money_unit() -> str:
+    return f"{display_currency().code} M"
+
+
+def localize_figure(fig: go.Figure) -> go.Figure:
+    """Swap the USD symbol and unit labels in a figure's text for the active reporting currency."""
+    cur = display_currency()
+    if cur.code == "USD":
+        return fig
+
+    def swap(text):
+        if isinstance(text, str):
+            return text.replace("USD millions", f"{cur.code} millions").replace("USD M", f"{cur.code} M").replace(
+                "$", cur.symbol)
+        return text
+
+    for trace in fig.data:
+        for attr in ("hovertemplate", "texttemplate", "name"):
+            if hasattr(trace, attr) and isinstance(getattr(trace, attr), str):
+                setattr(trace, attr, swap(getattr(trace, attr)))
+        if hasattr(trace, "text") and trace.text is not None:
+            trace.text = swap(trace.text) if isinstance(trace.text, str) else [
+                [swap(v) for v in row] if isinstance(row, (list, tuple)) else swap(row) for row in trace.text]
+        if hasattr(trace, "customdata") and trace.customdata is not None and getattr(trace, "type", "") == "waterfall":
+            trace.customdata = [swap(v) for v in trace.customdata]
+        if getattr(trace, "colorbar", None) is not None and trace.colorbar.title.text:
+            trace.colorbar.title.text = swap(trace.colorbar.title.text)
+            if trace.colorbar.tickprefix:
+                trace.colorbar.tickprefix = swap(trace.colorbar.tickprefix)
+    for ann in fig.layout.annotations:
+        ann.text = swap(ann.text)
+    fig.for_each_xaxis(lambda ax: ax.update(tickprefix=swap(ax.tickprefix), title_text=swap(ax.title.text)))
+    fig.for_each_yaxis(lambda ax: ax.update(tickprefix=swap(ax.tickprefix), title_text=swap(ax.title.text)))
+    return fig
 
 
 def _is_bad(val: float | None) -> bool:
@@ -233,24 +321,26 @@ def _is_bad(val: float | None) -> bool:
 
 
 def fmt_millions(val: float | None) -> str:
+    """USD amount shown in the reporting currency, in millions."""
     if _is_bad(val):
         return "n/a"
     sign = "-" if val < 0 else ""
-    return f"{sign}${abs(val) / 1e6:,.2f}M"
+    return f"{sign}{display_currency().symbol}{abs(val) / money_divisor():,.2f}M"
 
 
 def fmt_signed_millions(val: float | None) -> str:
     if _is_bad(val):
         return "n/a"
     sign = "-" if val < 0 else "+"
-    return f"{sign}${abs(val) / 1e6:,.2f}M"
+    return f"{sign}{display_currency().symbol}{abs(val) / money_divisor():,.2f}M"
 
 
 def fmt_currency(val: float | None) -> str:
     if _is_bad(val):
         return "n/a"
     sign = "-" if val < 0 else ""
-    return f"{sign}${abs(val):,.2f}"
+    cur = display_currency()
+    return f"{sign}{cur.symbol}{abs(val) / cur.usd_per_unit:,.2f}"
 
 
 def fmt_pct(val: float | None, decimals: int = 2) -> str:

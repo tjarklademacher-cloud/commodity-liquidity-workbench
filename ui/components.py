@@ -24,7 +24,7 @@ from core.schemas import (
     StressScenarioResult,
 )
 from core.stress_engine import build_bb_certificate_csv, build_bb_certificate_json
-from ui.theme import COLORS, STATUS, fmt_millions, fmt_pct
+from ui.theme import AUTHOR, COLORS, HOUSE_NAME, STATUS, fmt_millions, fmt_pct
 
 INVENTORY_EDITABLE = ["Physical Qty", "Hedged Qty"]
 INVENTORY_CALC = ["Spot", "30d Vol", "Hedge %", "Adv Rate", "GMV", "Eligible", "Contracts"]
@@ -91,7 +91,8 @@ def render_header(meta: Sequence[tuple[str, str]], data_status: tuple[str, str])
     items += [f"<span>{html.escape(k)} <b>{html.escape(v)}</b></span>" for k, v in meta]
     st.markdown(
         '<div class="app-header"><div><div class="title">Commodity Liquidity Workbench</div>'
-        '<div class="subtitle">Borrowing base and Liquidity-at-Risk analytics</div></div>'
+        f'<div class="subtitle">{html.escape(HOUSE_NAME)} (illustrative book) · Borrowing base and '
+        'Liquidity-at-Risk analytics</div></div>'
         f'<div class="meta">{"".join(items)}</div></div>',
         unsafe_allow_html=True,
     )
@@ -153,8 +154,8 @@ back in, but the borrowing base shrinks and the lender can demand a deficiency p
 inflows, minus margin calls, initial margin step-up and any borrowing base deficiency cure. Below zero
 the desk cannot meet its cash calls.
 
-**Who uses it.** Treasury and trading desks at commodity merchants, trade finance and ABL lenders
-sizing facilities, and risk teams setting cash buffers and hedge ratios.
+**Who uses it.** Treasury, trading and risk teams at a physical merchant deciding how much cash, margin
+funding and facility headroom to hold, and when to act. Lenders and credit committees use the same view.
                 """
             )
         with col_b:
@@ -179,6 +180,10 @@ liquidity runway follows daily paths for 20 trading days and records when each o
 **Hedging.** Sweeps the hedge ratio from 0% to 100% and shows the trade-off between margin calls in a
 rally and unprotected inventory value in a fall.
 
+**Funding plan.** A contingency funding plan: the moves that break the book (reverse stress test),
+early-warning triggers, and the size of each remedial action (cash, margin financing line, revolver
+accordion, hedge reduction) that restores a zero buffer.
+
 **Replays.** Today's book run through the loaded price history, or through observed futures prices
 from real episodes: the Covid-19 crash, the 2021 Brazil frost, the 2022 Russia-Ukraine shock and the
 2024 cocoa squeeze.
@@ -187,6 +192,67 @@ from real episodes: the Covid-19 crash, the 2021 Brazil frost, the 2022 Russia-U
 30-day realized volatility; margin is settled in cash on the shock day.
                 """
             )
+
+
+def regime_explanation_text(stress: StressScenarioResult) -> str:
+    """Plain-language diagnosis of the active regime, in the reporting currency (mirrors the core classifier)."""
+    regime = str(stress.regime)
+    if regime == "CRITICAL_SQUEEZE":
+        return (f"Cash calls exceed available liquidity by {fmt_millions(-stress.net_liquidity_buffer)}: margin and "
+                "cure obligations cannot be funded from cash, revolver headroom and any margin line.")
+    if regime == "MARGIN_TRAP_WARNING":
+        covered = min(stress.margin_line_draw, stress.vm_outflow)
+        uncovered = stress.vm_outflow - covered
+        line = f" after {fmt_millions(covered)} from the margin line" if covered > 0 else ""
+        return (f"Futures variation margin of {fmt_millions(uncovered)}{line} outpaces the "
+                f"{fmt_millions(max(0.0, stress.headroom_change))} of new revolver headroom: the inventory gain is "
+                "held back by haircuts, caps and the facility ceiling while hedges drain cash.")
+    if regime == "BB_DEFICIENCY_WARNING":
+        return (f"The borrowing base has fallen below the drawn balance: a {fmt_millions(stress.bb_deficiency_cure)} "
+                "deficiency cure is due, partly offset by futures margin inflows.")
+    return "Liquid resources cover all margin and cure obligations; no deficiency and no margin trap."
+
+
+def render_author_panel() -> None:
+    """Compact 'built by' block for the bottom of the sidebar."""
+    st.sidebar.markdown(
+        f'<div class="side-section">About</div><div class="author"><div class="name">{html.escape(AUTHOR["name"])}'
+        f'</div><div>{html.escape(AUTHOR["bio"])}</div><div style="margin-top:6px;">'
+        f'<a href="{AUTHOR["github"]}" target="_blank">GitHub</a> · '
+        f'<a href="{AUTHOR["repo"]}" target="_blank">Source code</a></div>'
+        f'<div style="margin-top:6px;color:#64748B;">{html.escape(HOUSE_NAME)} is an illustrative book; '
+        "positions, receivables and facility terms are not real.</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_action_list(actions: Sequence[Any]) -> None:
+    """Ranked remedial actions as wrapped rows: label and size on one line, how and trade-off beneath."""
+    rows = []
+    for i, a in enumerate(actions, start=1):
+        size = fmt_millions(a.required_usd) if a.required_usd is not None else "Not sufficient alone"
+        badge = _status_badge("Sufficient alone" if a.feasible else "Not sufficient alone",
+                              "healthy" if a.feasible else "neutral")
+        cap = (f" Can contribute up to {fmt_millions(a.capacity_usd)}." if a.capacity_usd is not None
+               and not a.feasible else "")
+        rows.append(
+            f'<div class="audit-row" style="display:block;"><div style="display:flex;justify-content:space-between;'
+            f'gap:12px;"><span><b>{i}. {html.escape(a.label)}</b> {badge}</span>'
+            f'<span class="v">{size}</span></div><div style="color:#475569;margin-top:2px;">'
+            f'{html.escape(a.detail)}{html.escape(cap)}</div><div style="color:#64748B;font-size:12px;">'
+            f"Trade-off: {html.escape(a.side_effect)}</div></div>"
+        )
+    st.markdown(f"<div>{''.join(rows)}</div>", unsafe_allow_html=True)
+
+
+def render_trigger_list(triggers: Sequence[Any], label_fn: Any, status_fn: Any) -> None:
+    rows = "".join(
+        f'<div class="briefing-item"><span class="marker" style="background:{STATUS[status_fn(t.regime)][0]};">'
+        f'</span><span><b class="num">{t.shock_pct:+.2%}</b> {html.escape(label_fn(t.regime))}: '
+        f"{html.escape(t.description)}</span></div>"
+        for t in triggers
+    )
+    st.markdown(f"<div>{rows}</div>", unsafe_allow_html=True)
 
 
 def render_briefing(items: Sequence[tuple[str, str]]) -> None:
@@ -365,8 +431,8 @@ def certificate_download_buttons(
     stamp = market.as_of_date.replace("-", "")
     with col_csv:
         st.download_button(
-            "CSV certificate",
-            data=build_bb_certificate_csv(bb_result, stress_result, market),
+            "CSV certificate (USD)",
+            data=build_bb_certificate_csv(bb_result, stress_result, market, HOUSE_NAME),
             file_name=f"borrowing_base_certificate_{stamp}.csv",
             mime="text/csv",
             width="stretch",
@@ -374,8 +440,8 @@ def certificate_download_buttons(
         )
     with col_json:
         st.download_button(
-            "JSON certificate",
-            data=build_bb_certificate_json(bb_result, stress_result, market),
+            "JSON certificate (USD)",
+            data=build_bb_certificate_json(bb_result, stress_result, market, HOUSE_NAME),
             file_name=f"borrowing_base_certificate_{stamp}.json",
             mime="application/json",
             width="stretch",

@@ -21,6 +21,10 @@ from core.schemas import (
 DEFAULT_SAMPLE_CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "sample_prices.csv"
 
 MIN_LIVE_OBSERVATIONS = 40
+FX_TICKERS: dict[str, str] = {"EUR": "EURUSD=X", "GBP": "GBPUSD=X", "CHF": "CHFUSD=X"}
+# Yahoo Finance closes observed on 2026-11-20, used when the live FX request fails (USD per unit of currency).
+FX_FALLBACK: dict[str, float] = {"EUR": 1.096972, "GBP": 1.308644, "CHF": 1.184694}
+FX_FALLBACK_DATE = "2026-11-20"
 LIVE_TIMEOUT_SECONDS = 10
 
 SAMPLE_CALIBRATION: dict[str, dict[str, float]] = {
@@ -264,6 +268,27 @@ def load_live_market_data(
                 ),
             }
         )
+
+
+def load_fx_rate(code: str, download: Any = None) -> tuple[float, str, str]:
+    """USD per one unit of `code` as (rate, source, as_of). USD is 1.0; failures fall back to FX_FALLBACK."""
+    if code == "USD":
+        return 1.0, "model currency", ""
+    if code not in FX_TICKERS:
+        raise ValueError(f"Unsupported reporting currency: {code}")
+    fetch = download or yf.download
+    try:
+        raw = fetch(tickers=FX_TICKERS[code], period="10d", interval="1d", auto_adjust=True, progress=False,
+                    threads=False, timeout=LIVE_TIMEOUT_SECONDS)
+        closes = raw["Close"] if raw is not None and not raw.empty else pd.DataFrame()
+        series = closes.squeeze("columns") if isinstance(closes, pd.DataFrame) else closes
+        series = pd.to_numeric(series, errors="coerce").dropna()
+        series = series[series > 0.0]
+        if series.empty:
+            raise ValueError("empty FX response")
+        return float(series.iloc[-1]), "Yahoo Finance", pd.Timestamp(series.index[-1]).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001 - FX is display-only; any failure uses the bundled rate
+        return FX_FALLBACK[code], "bundled rate", FX_FALLBACK_DATE
 
 
 def _main() -> None:

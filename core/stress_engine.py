@@ -33,18 +33,26 @@ def classify_liquidity_regime(
     vm_outflow: float,
     headroom_change: float,
     bb_deficiency_cure: float,
+    margin_line_vm_cover: float = 0.0,
 ) -> tuple[LiquidityRegime, str]:
-    """Strict-priority treasury regime classification with a plain-English diagnosis."""
+    """Strict-priority treasury regime classification with a plain-English diagnosis.
+
+    `margin_line_vm_cover` is the part of the variation margin call funded by a dedicated margin line; only the
+    uncovered remainder can create a margin trap.
+    """
     if net_liquidity_buffer < 0.0:
         return (
             LiquidityRegime.CRITICAL_SQUEEZE,
             f"Cash calls exceed available liquidity by ${-net_liquidity_buffer / 1e6:,.2f}M: "
-            "futures margin and cure obligations cannot be funded from cash plus revolver headroom.",
+            "futures margin and cure obligations cannot be funded from cash, revolver headroom and any margin line.",
         )
-    if vm_outflow > 0.0 and vm_outflow > max(0.0, headroom_change):
+    uncovered_vm = vm_outflow - min(max(0.0, margin_line_vm_cover), vm_outflow)
+    if uncovered_vm > 0.0 and uncovered_vm > max(0.0, headroom_change):
+        covered = (f" (after ${(vm_outflow - uncovered_vm) / 1e6:,.2f}M from the margin line)"
+                   if uncovered_vm < vm_outflow else "")
         return (
             LiquidityRegime.MARGIN_TRAP_WARNING,
-            f"Futures variation margin of ${vm_outflow / 1e6:,.2f}M outpaces the "
+            f"Futures variation margin of ${uncovered_vm / 1e6:,.2f}M{covered} outpaces the "
             f"${max(0.0, headroom_change) / 1e6:,.2f}M of new revolver headroom: the inventory rally is "
             "trapped behind haircuts, caps and the facility ceiling while hedges drain cash.",
         )
@@ -109,10 +117,12 @@ def run_stress_scenario(
     )
     bb_deficiency_cure = max(0.0, terms.drawn_revolver - shocked_bb)
     total_cash_outflows = vm_outflow + im_addon_outflow + bb_deficiency_cure
-    total_liquid_resources = terms.unrestricted_cash + shocked_headroom + vm_inflow
+    margin_line_draw = min(terms.margin_line_limit, vm_outflow + im_addon_outflow)
+    total_liquid_resources = terms.unrestricted_cash + shocked_headroom + vm_inflow + margin_line_draw
     net_liquidity_buffer = total_liquid_resources - total_cash_outflows
     regime, explanation = classify_liquidity_regime(
-        net_liquidity_buffer, vm_outflow, headroom_change, bb_deficiency_cure
+        net_liquidity_buffer, vm_outflow, headroom_change, bb_deficiency_cure,
+        margin_line_vm_cover=min(terms.margin_line_limit, vm_outflow),
     )
     return StressScenarioResult(
         shock_pct=float(shock_pct),
@@ -131,6 +141,7 @@ def run_stress_scenario(
         total_cash_outflows=total_cash_outflows,
         total_liquid_resources=total_liquid_resources,
         net_liquidity_buffer=net_liquidity_buffer,
+        margin_line_draw=margin_line_draw,
         regime=regime,
         regime_explanation=explanation,
         shocked_bb_result=shocked_bb_result,
@@ -197,10 +208,13 @@ def _certificate_payload(
     bb_result: BorrowingBaseResult,
     stress_result: StressScenarioResult,
     market_meta: MarketLoadResult,
+    borrower: str = "",
 ) -> dict:
     return {
         "certificate": {
             "title": "Borrowing Base Certificate - Commodity ABL Facility",
+            "borrower": borrower,
+            "currency": "USD",
             "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "valuation_date": market_meta.as_of_date,
             "market_data_source": market_meta.source_label,
@@ -276,6 +290,7 @@ def _certificate_payload(
             "vm_outflow": stress_result.vm_outflow,
             "vm_inflow": stress_result.vm_inflow,
             "im_addon_outflow": stress_result.im_addon_outflow,
+            "margin_line_draw": stress_result.margin_line_draw,
             "bb_deficiency_cure": stress_result.bb_deficiency_cure,
             "total_cash_outflows": stress_result.total_cash_outflows,
             "total_liquid_resources": stress_result.total_liquid_resources,
@@ -290,9 +305,10 @@ def build_bb_certificate_csv(
     bb_result: BorrowingBaseResult,
     stress_result: StressScenarioResult,
     market_meta: MarketLoadResult,
+    borrower: str = "",
 ) -> str:
     """Flatten the certificate to a three-column (section, item, value) audit CSV."""
-    payload = _certificate_payload(bb_result, stress_result, market_meta)
+    payload = _certificate_payload(bb_result, stress_result, market_meta, borrower)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["section", "item", "value"])
@@ -319,6 +335,7 @@ def build_bb_certificate_json(
     bb_result: BorrowingBaseResult,
     stress_result: StressScenarioResult,
     market_meta: MarketLoadResult,
+    borrower: str = "",
 ) -> str:
     """Serialize the certificate as indented JSON."""
-    return json.dumps(_certificate_payload(bb_result, stress_result, market_meta), indent=2)
+    return json.dumps(_certificate_payload(bb_result, stress_result, market_meta, borrower), indent=2)

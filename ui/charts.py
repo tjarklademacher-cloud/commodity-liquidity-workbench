@@ -32,6 +32,8 @@ from ui.theme import (
     STATUS,
     apply_institutional_layout,
     bridge_label,
+    fmt_millions,
+    money_divisor,
     regime_label,
     regime_status,
 )
@@ -42,12 +44,11 @@ HEALTHY = STATUS["healthy"][0]
 
 
 def _m(val: float) -> float:
-    return val / 1e6
+    return val / money_divisor()
 
 
 def _mtext(val: float) -> str:
-    sign = "-" if val < 0 else ""
-    return f"{sign}${abs(val) / 1e6:,.2f}M"
+    return fmt_millions(val)
 
 
 def _wrap_label(name: str) -> str:
@@ -238,7 +239,7 @@ def _add_regime_bands(fig: go.Figure, sweep_result: StressSweepResult, row: int 
 def _buffer_trace(df: pd.DataFrame) -> go.Scatter:
     labels = [regime_label(r) for r in df["regime"]]
     return go.Scatter(
-        x=df["shock_pct"] * 100, y=df["net_liquidity_buffer"] / 1e6, mode="lines+markers",
+        x=df["shock_pct"] * 100, y=df["net_liquidity_buffer"] / money_divisor(), mode="lines+markers",
         name="Net liquidity buffer", line=dict(color=PORTFOLIO_COLOR, width=2), marker=dict(size=4),
         customdata=labels, hovertemplate="Shock %{x:+.0f}%<br>Buffer $%{y:,.2f}M<br>%{customdata}<extra></extra>",
     )
@@ -296,13 +297,13 @@ def build_stress_sweep_chart(
         fig.add_vline(x=be, line=dict(color=CAUTION, dash="dot", width=1), row=1, col=1)
         _note(fig, be, f"Deficiency {be:+.2f}%", CAUTION, top=False, align="right", row=1)
     fig.add_trace(
-        go.Scatter(x=x, y=df["total_liquid_resources"] / 1e6, mode="lines", name="Liquid resources",
+        go.Scatter(x=x, y=df["total_liquid_resources"] / money_divisor(), mode="lines", name="Liquid resources",
                    line=dict(color=HEALTHY, width=1.8),
                    hovertemplate="Resources $%{y:,.2f}M<extra></extra>"),
         row=2, col=1,
     )
     fig.add_trace(
-        go.Scatter(x=x, y=df["total_cash_outflows"] / 1e6, mode="lines", name="Cash outflows",
+        go.Scatter(x=x, y=df["total_cash_outflows"] / money_divisor(), mode="lines", name="Cash outflows",
                    line=dict(color=BREACH, width=1.8), fill="tonexty", fillcolor="rgba(153, 27, 27, 0.06)",
                    hovertemplate="Outflows $%{y:,.2f}M<extra></extra>"),
         row=2, col=1,
@@ -376,8 +377,8 @@ def build_shock_heatmap(grid: ShockGridResult, active_point: tuple[float, float]
     """Metals vs. softs/lumber shock grid of net liquidity buffer with the $0 contour."""
     x = [v * 100 for v in grid.softs_axis]
     y = [v * 100 for v in grid.metals_axis]
-    z = [[v / 1e6 for v in row] for row in grid.net_buffer]
-    custom = [[[regime_label(grid.regime[i][j]), grid.shocked_bb[i][j] / 1e6] for j in range(len(x))]
+    z = [[v / money_divisor() for v in row] for row in grid.net_buffer]
+    custom = [[[regime_label(grid.regime[i][j]), grid.shocked_bb[i][j] / money_divisor()] for j in range(len(x))]
               for i in range(len(y))]
     zmin = min(min(r) for r in z)
     zmax = max(max(r) for r in z)
@@ -419,8 +420,8 @@ def build_shock_heatmap(grid: ShockGridResult, active_point: tuple[float, float]
 
 def build_mc_distribution_chart(mc: MonteCarloResult) -> go.Figure:
     """Histogram of simulated net liquidity buffers; paths at or below the 5th percentile shaded as the tail."""
-    vals = [v / 1e6 for v in mc.net_buffer_samples]
-    p05 = mc.p05_net_buffer / 1e6
+    vals = [v / money_divisor() for v in mc.net_buffer_samples]
+    p05 = mc.p05_net_buffer / money_divisor()
     lo, hi = min(vals + [0.0]), max(vals)
     size = max((max(vals) - min(vals)) / 70.0, 0.01)
     bins = dict(start=min(vals) - size, end=hi + size, size=size)
@@ -432,9 +433,9 @@ def build_mc_distribution_chart(mc: MonteCarloResult) -> go.Figure:
     fig.add_trace(go.Histogram(x=tail, xbins=bins, name="Worst 5% of paths", marker=dict(color=BREACH),
                                opacity=0.75, hovertemplate="$%{x:.2f}M: %{y} paths<extra></extra>"))
     markers = [
-        (mc.p01_net_buffer / 1e6, f"LaR 99%: {_mtext(mc.p01_net_buffer)}", BREACH, "dash", 1.0, "right"),
+        (mc.p01_net_buffer / money_divisor(), f"LaR 99%: {_mtext(mc.p01_net_buffer)}", BREACH, "dash", 1.0, "right"),
         (p05, f"LaR 95%: {_mtext(mc.p05_net_buffer)}", BREACH, "dash", 0.92, "left"),
-        (mc.mean_net_buffer / 1e6, f"Mean: {_mtext(mc.mean_net_buffer)}", COLORS["muted"], "dot", 1.0, "right"),
+        (mc.mean_net_buffer / money_divisor(), f"Mean: {_mtext(mc.mean_net_buffer)}", COLORS["muted"], "dot", 1.0, "right"),
         (0.0, "$0 buffer", COLORS["text"], "solid", 0.84, "left"),
     ]
     for xv, label, color, dash, ypos, side in markers:
@@ -479,26 +480,26 @@ def build_replay_chart(replay: HistoricalReplayResult, terms: FacilityTerms) -> 
             "5-day stressed liquidity buffer (USD M)",
         ),
     )
-    bb_m = df["borrowing_base"] / 1e6
-    y_lo = min(float(bb_m.min()), terms.drawn_revolver / 1e6) * 0.97
-    y_hi = max(float(bb_m.max()), terms.facility_limit / 1e6) * 1.02
+    bb_m = df["borrowing_base"] / money_divisor()
+    y_lo = min(float(bb_m.min()), terms.drawn_revolver / money_divisor()) * 0.97
+    y_hi = max(float(bb_m.max()), terms.facility_limit / money_divisor()) * 1.02
     fig.add_trace(
         go.Scatter(x=df.index, y=bb_m, name="Borrowing base", mode="lines",
                    line=dict(color=PORTFOLIO_COLOR, width=1.8), hovertemplate="BB $%{y:,.2f}M<extra></extra>"),
         row=1, col=1,
     )
-    fig.add_hrect(y0=y_lo, y1=terms.drawn_revolver / 1e6, fillcolor=STATUS["breach"][1], line_width=0,
+    fig.add_hrect(y0=y_lo, y1=terms.drawn_revolver / money_divisor(), fillcolor=STATUS["breach"][1], line_width=0,
                   layer="below", row=1, col=1)
-    fig.add_hline(y=terms.facility_limit / 1e6, line=dict(color=COLORS["reference"], dash="dash", width=1.2),
+    fig.add_hline(y=terms.facility_limit / money_divisor(), line=dict(color=COLORS["reference"], dash="dash", width=1.2),
                   row=1, col=1)
-    fig.add_hline(y=terms.drawn_revolver / 1e6, line=dict(color=BREACH, dash="dot", width=1.2), row=1, col=1)
-    fig.add_annotation(x=0, xref="x domain", y=terms.facility_limit / 1e6, yref="y", xanchor="left",
+    fig.add_hline(y=terms.drawn_revolver / money_divisor(), line=dict(color=BREACH, dash="dot", width=1.2), row=1, col=1)
+    fig.add_annotation(x=0, xref="x domain", y=terms.facility_limit / money_divisor(), yref="y", xanchor="left",
                        yanchor="bottom", showarrow=False, text="Facility limit",
                        font=dict(size=10, color=COLORS["muted"]))
-    fig.add_annotation(x=0, xref="x domain", y=terms.drawn_revolver / 1e6, yref="y", xanchor="left",
+    fig.add_annotation(x=0, xref="x domain", y=terms.drawn_revolver / money_divisor(), yref="y", xanchor="left",
                        yanchor="top", showarrow=False, text="Drawn balance (deficiency below)",
                        font=dict(size=10, color=BREACH))
-    vm = df["daily_vm"] / 1e6
+    vm = df["daily_vm"] / money_divisor()
     fig.add_trace(
         go.Bar(x=df.index, y=vm, name="Daily VM",
                marker=dict(color=[HEALTHY if v >= 0 else BREACH for v in vm], opacity=0.85),
@@ -506,11 +507,11 @@ def build_replay_chart(replay: HistoricalReplayResult, terms: FacilityTerms) -> 
         row=2, col=1,
     )
     fig.add_trace(
-        go.Scatter(x=df.index, y=df["rolling_vm"] / 1e6, name="5-day net VM", mode="lines",
+        go.Scatter(x=df.index, y=df["rolling_vm"] / money_divisor(), name="5-day net VM", mode="lines",
                    line=dict(color=COLORS["muted"], width=1.2), hovertemplate="5-day VM $%{y:+,.2f}M<extra></extra>"),
         row=2, col=1,
     )
-    buf = df["stressed_buffer"] / 1e6
+    buf = df["stressed_buffer"] / money_divisor()
     fig.add_trace(
         go.Scatter(x=df.index, y=buf.clip(lower=0.0), mode="lines", line=dict(width=0), fill="tozeroy",
                    fillcolor="rgba(22, 101, 52, 0.10)", showlegend=False, hoverinfo="skip"),
@@ -551,13 +552,13 @@ def build_hedge_frontier_chart(res: HedgeFrontierResult) -> go.Figure:
         ("Worst case across -20% to +20%", res.min_buffer, PORTFOLIO_COLOR, "solid"),
     ]
     for name, ys, color, dash in series:
-        fig.add_trace(go.Scatter(x=x, y=[v / 1e6 for v in ys], mode="lines+markers", name=name,
+        fig.add_trace(go.Scatter(x=x, y=[v / money_divisor() for v in ys], mode="lines+markers", name=name,
                                  line=dict(color=color, width=2 if color == PORTFOLIO_COLOR else 1.6, dash=dash),
                                  marker=dict(size=4),
                                  hovertemplate=f"Hedge %{{x:.0f}}%<br>{name}: $%{{y:,.2f}}M<extra></extra>"),
                       row=1, col=1)
     fig.add_hline(y=0.0, line=dict(color=BREACH, dash="dot", width=1), row=1, col=1)
-    fig.add_trace(go.Bar(x=x, y=[v / 1e6 for v in res.crash_value_loss], name="Unhedged loss",
+    fig.add_trace(go.Bar(x=x, y=[v / money_divisor() for v in res.crash_value_loss], name="Unhedged loss",
                          marker=dict(color="#CBD5E1"), showlegend=False,
                          hovertemplate="Hedge %{x:.0f}%<br>Loss $%{y:,.2f}M<extra></extra>"),
                   row=2, col=1)
@@ -583,7 +584,7 @@ def build_hedge_frontier_chart(res: HedgeFrontierResult) -> go.Figure:
 def build_runway_fan_chart(rw: RunwayResult) -> go.Figure:
     """Percentile fan of the simulated net liquidity buffer by trading day."""
     days = rw.days
-    p = {k: [v / 1e6 for v in vals] for k, vals in rw.percentiles.items()}
+    p = {k: [v / money_divisor() for v in vals] for k, vals in rw.percentiles.items()}
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=days, y=p["p95"], mode="lines", line=dict(width=0), hoverinfo="skip",
                              showlegend=False))
@@ -641,13 +642,13 @@ def build_crisis_replay_chart(res: CrisisReplayResult, specs: Mapping[str, Commo
             line=dict(color=COMMODITY_COLORS.get(t, PORTFOLIO_COLOR), width=1.6, dash=COMMODITY_DASH.get(t, "solid")),
             hovertemplate=f"{specs[t].name} %{{y:+.1f}}%<extra></extra>"), row=1, col=1)
     fig.add_hline(y=0.0, line=dict(color=COLORS["border"], width=1), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df["shocked_bb"] / 1e6, mode="lines", name="Borrowing base",
+    fig.add_trace(go.Scatter(x=df.index, y=df["shocked_bb"] / money_divisor(), mode="lines", name="Borrowing base",
                              line=dict(color=PORTFOLIO_COLOR, width=1.8), showlegend=False,
                              hovertemplate="BB $%{y:,.2f}M<extra></extra>"), row=2, col=1)
-    fig.add_hline(y=terms.facility_limit / 1e6, line=dict(color=COLORS["reference"], dash="dash", width=1.2),
+    fig.add_hline(y=terms.facility_limit / money_divisor(), line=dict(color=COLORS["reference"], dash="dash", width=1.2),
                   row=2, col=1)
-    fig.add_hline(y=terms.drawn_revolver / 1e6, line=dict(color=BREACH, dash="dot", width=1.2), row=2, col=1)
-    nlb = df["net_liquidity_buffer"] / 1e6
+    fig.add_hline(y=terms.drawn_revolver / money_divisor(), line=dict(color=BREACH, dash="dot", width=1.2), row=2, col=1)
+    nlb = df["net_liquidity_buffer"] / money_divisor()
     fig.add_trace(go.Scatter(x=df.index, y=nlb.clip(lower=0.0), mode="lines", line=dict(width=0), fill="tozeroy",
                              fillcolor="rgba(22, 101, 52, 0.10)", showlegend=False, hoverinfo="skip"), row=3, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=nlb.clip(upper=0.0), mode="lines", line=dict(width=0), fill="tozeroy",

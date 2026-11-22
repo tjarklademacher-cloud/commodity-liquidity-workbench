@@ -5,7 +5,9 @@
 > **Screenshot:** save a capture of the Overview tab as `docs/dashboard.png`, then replace this line with
 > `![Workbench overview](docs/dashboard.png)`
 
-A Streamlit desk tool for a physical commodity merchant financed by an asset-based revolving facility. It
+A Streamlit desk tool for the treasury, trading and risk team of a physical commodity merchant financed
+by an asset-based revolving facility. The modelled book belongs to Lademacher Commodities, an illustrative
+trading house. It
 values a hedged Gold, Copper, Lumber, Cocoa, Coffee and Sugar book plus a trade receivables ledger, produces a borrowing
 base certificate, and measures how much cash and revolver headroom remain when prices move.
 
@@ -39,7 +41,17 @@ tests/  pytest suite, including Streamlit AppTest end-to-end runs
 | **Scenario heatmap** | Which mixed moves are dangerous? | Metals (Gold, Copper) and softs/lumber (Lumber, Cocoa, Coffee, Sugar) shocked independently on a 17 x 17 grid, with the zero-buffer contour drawn. |
 | **Monte Carlo LaR** | How bad is a bad week, and how long can we last? | Thousands of correlated price paths over 1, 5, 10 or 20 trading days, drawn from the recent return covariance via Cholesky decomposition. Reports LaR 95% and 99% (5th and 1st percentile buffer), expected shortfall and regime probabilities. The liquidity runway follows daily paths for 20 trading days: a percentile fan of the buffer and the share of paths that have run short by each day. |
 | **Hedging** | How much should we hedge? | Sweeps the hedge ratio of one commodity, or all at once, from 0% to 100%. Each ratio is re-valued (the unhedged haircut penalty changes) and run through the 41 parallel shocks. The liquidity-optimal ratio keeps the buffer at or above zero in the most shocks; it is shown next to the inventory value left unprotected in a 20% fall. |
+| **Funding plan** | What breaks us, and what fixes it? | A contingency funding plan as regulators ask of commodity traders: single-commodity reverse stress test (smallest rally that exhausts liquidity, smallest fall that opens a deficiency), early-warning triggers read off the sweep, and the size of each remedial action (cash, margin financing line, revolver accordion, pro rata hedge cut) that restores a zero buffer, each verified with the stress engine. |
 | **Replays** | How would today's book have fared in real stress? | Either the loaded price history (borrowing base, daily margin, 5-day stressed buffer), or observed Yahoo Finance futures prices for four real episodes: Covid-19 crash 2020, Brazil coffee frost 2021, Russia-Ukraine shock 2022, cocoa squeeze 2024. Each day's cumulative move is applied to today's spot prices, with that day's observed 30-day volatility in the haircuts. Commodities without history in a window (CME physical lumber before August 2022) are held at today's price and flagged. |
+
+**Desk features**
+
+- **Margin financing line.** An optional bank line (sidebar, default none) that funds variation and
+  initial margin calls but not a borrowing base deficiency cure, as banks provided to traders in 2022.
+- **Reporting currency.** Outputs in USD, EUR, CHF or GBP at a live Yahoo Finance rate, with a bundled
+  2026-11-20 rate as fallback. Inputs, the model and certificate exports stay in USD.
+- **Credit committee report.** One-click self-contained HTML report (verdict, borrowing base, stress
+  sweep, LaR, runway, funding plan) that opens without the app.
 
 **Key assumptions**
 
@@ -84,6 +96,12 @@ in the test suite as a regression check on the engines.
 - **Crisis episodes.** Fetched from Yahoo Finance on first use and cached for a day. Without internet
   the Replays tab shows a short notice and every other view keeps working.
 - **Secrets.** None are required. No credentials are read or stored.
+
+## Author
+
+Built by **Tjark Lademacher**, commodity trade finance and risk analytics.
+GitHub: [tjarklademacher-cloud](https://github.com/tjarklademacher-cloud).
+Lademacher Commodities is an illustrative book; positions, receivables and facility terms are not real.
 
 ## Local setup & testing
 

@@ -13,7 +13,12 @@ from collections.abc import Mapping, Sequence
 import pandas as pd
 import streamlit as st
 
-from core.data_feed import load_custom_csv_market_data, load_live_market_data, load_sample_market_data
+from core.data_feed import (
+    load_custom_csv_market_data,
+    load_fx_rate,
+    load_live_market_data,
+    load_sample_market_data,
+)
 from core.crisis_replay import CRISIS_EPISODES, fetch_episode_closes, run_crisis_replay
 from core.hedge_optimizer import run_hedge_frontier
 from core.scenario_analytics import (
@@ -163,6 +168,12 @@ def cached_crisis_replay(
     closes = cached_episode_closes(episode_key)
     return run_crisis_replay(positions, receivables, snapshot, terms, closes, CRISIS_EPISODES[episode_key],
                              winsorize_sigma=_winsor(winsorize))
+
+
+@st.cache_data(ttl=LIVE_TTL_SECONDS, show_spinner=False)
+def cached_fx_rate(code: str) -> tuple[float, str, str]:
+    """USD per unit of the reporting currency (live, else the bundled 2026-11-20 rate)."""
+    return load_fx_rate(code)
 
 
 def market_data_status(market: MarketLoadResult) -> tuple[str, str]:

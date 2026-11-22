@@ -102,6 +102,7 @@ class FacilityTerms(BaseModel):
     ar_ig_advance_rate: float = Field(ge=0.0, le=1.0, default=0.85)
     ar_non_ig_advance_rate: float = Field(ge=0.0, le=1.0, default=0.75)
     default_active_shock_pct: float = Field(ge=-0.50, le=0.50, default=0.14)
+    margin_line_limit: float = Field(ge=0.0, default=0.0)
 
 
 class InventoryValuation(BaseModel):
@@ -219,6 +220,7 @@ class StressScenarioResult(BaseModel):
     total_cash_outflows: float
     total_liquid_resources: float
     net_liquidity_buffer: float
+    margin_line_draw: float = 0.0
     regime: LiquidityRegime
     regime_explanation: str
     shocked_bb_result: BorrowingBaseResult
@@ -443,3 +445,40 @@ class CrisisReplayResult(BaseModel):
     peak_vm_outflow: float
     peak_vm_date: str
     max_moves: dict[str, float]
+
+
+class CommodityBreakingMove(BaseModel):
+    """Reverse stress result for one commodity moved on its own, all others unchanged."""
+
+    ticker: str
+    name: str
+    squeeze_rally_pct: float | None
+    deficiency_fall_pct: float | None
+
+
+class TriggerLevel(BaseModel):
+    shock_pct: float
+    regime: str
+    description: str
+
+
+class FundingAction(BaseModel):
+    """One remedial action. Text fields carry no amounts; amounts are in required_usd / capacity_usd."""
+
+    key: str
+    label: str
+    required_usd: float | None
+    capacity_usd: float | None = None
+    feasible: bool
+    detail: str
+    side_effect: str
+
+
+class ContingencyPlan(BaseModel):
+    target_label: str
+    target_shocks: dict[str, float]
+    target_net_buffer: float
+    shortfall: float
+    actions: list[FundingAction]
+    breaking_moves: list[CommodityBreakingMove]
+    triggers: list[TriggerLevel]

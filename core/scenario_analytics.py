@@ -96,10 +96,12 @@ def evaluate_shock_matrix(
     )
     cure = np.maximum(0.0, terms.drawn_revolver - shocked_bb)
     outflows = vm_outflow + im + cure
-    resources = terms.unrestricted_cash + shocked_headroom + vm_inflow
+    margin_draw = np.minimum(terms.margin_line_limit, vm_outflow + im)
+    resources = terms.unrestricted_cash + shocked_headroom + vm_inflow + margin_draw
     nlb = resources - outflows
+    uncovered_vm = vm_outflow - np.minimum(terms.margin_line_limit, vm_outflow)
     regime = np.where(
-        nlb < 0.0, 3, np.where((vm_outflow > 0.0) & (vm_outflow > np.maximum(0.0, headroom_change)), 1,
+        nlb < 0.0, 3, np.where((uncovered_vm > 0.0) & (uncovered_vm > np.maximum(0.0, headroom_change)), 1,
                                np.where(cure > 0.0, 2, 0))
     )
     return {
@@ -109,6 +111,7 @@ def evaluate_shock_matrix(
         "vm_outflow": vm_outflow,
         "vm_inflow": vm_inflow,
         "im_addon_outflow": im,
+        "margin_line_draw": margin_draw,
         "bb_deficiency_cure": cure,
         "net_liquidity_buffer": nlb,
         "regime_code": regime,

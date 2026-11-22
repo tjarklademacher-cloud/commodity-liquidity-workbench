@@ -25,6 +25,8 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 | `core/scenario_analytics.py` | Vectorized engine, metals×softs shock grid, Monte Carlo LaR, liquidity runway, replay |
 | `core/hedge_optimizer.py` | Hedge-ratio frontier against the 41-point sweep |
 | `core/crisis_replay.py` | Real crisis episodes from Yahoo Finance applied to today's book |
+| `core/contingency.py` | Contingency funding plan: reverse stress, triggers, sized remedial actions |
+| `ui/report.py` | Self-contained HTML credit committee report (built on download click) |
 | `ui/theme.py` | Design system: light institutional tokens (mirrored in `.streamlit/config.toml`), semantic STATUS colours, commodity palette, Plotly layout, minimal CSS for custom HTML and `panel_*` containers |
 | `ui/charts.py` | The original six Plotly figures plus gauge, donut, regime ribbon, heatmap, MC, correlation, replay |
 | `ui/cache.py` | `st.cache_data` wrappers (live TTL 900s, scenario suite, Monte Carlo) and data-status label |
@@ -85,6 +87,8 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 - Custom HTML goes through `_html()` / single-line strings so Markdown never renders indented HTML as code.
 
 - UI copy and docs: plain, factual, sentence case, no em-dashes or emojis.
+- Money shown in the UI goes through `fmt_millions`/`money_divisor()`/`localize_figure` (reporting currency);
+  the model, inputs and certificate exports stay in USD. Margin line (`margin_line_limit`) defaults to 0.
 - Visual changes go through `ui/theme.py` tokens; risk colours (`STATUS`) only for states the model defines.
   Chart titles live in the surrounding `panel()` heading, not inside the Plotly figure.
 

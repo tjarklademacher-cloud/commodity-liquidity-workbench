@@ -158,9 +158,10 @@ def test_app_initial_load_clean(app):
     assert len(app.warning) == 0
     assert any(e.label == "Methodology and use case" for e in app.expander)
     assert [t.label for t in app.tabs] == ["Overview", "Borrowing base", "Inventory", "Receivables", "Stress sweep",
-                                           "Scenario heatmap", "Monte Carlo LaR", "Hedging", "Replays"]
+                                           "Scenario heatmap", "Monte Carlo LaR", "Hedging", "Funding plan",
+                                           "Replays"]
     assert "Bundled sample data" in " ".join(m.value for m in app.markdown)
-    assert len(app.tabs) == 9
+    assert len(app.tabs) == 10
     assert 'class="verdict"' in " ".join(m.value for m in app.markdown)
 
 
@@ -272,3 +273,19 @@ def test_new_charts_serialize(market, default_positions, default_receivables, de
         payload = json.loads(fig.to_json())
         assert payload["data"]
         assert not fig.layout.title.text
+
+
+def test_app_margin_line_moves_default_out_of_squeeze(app):
+    app.number_input(key="margin_line_m").set_value(2.0).run()
+    assert len(app.exception) == 0
+    assert app.session_state["active_regime"] == "MARGIN_TRAP_WARNING"
+
+
+def test_app_reporting_currency_and_funding_plan(app):
+    app.selectbox(key="report_ccy").set_value("EUR").run()
+    assert len(app.exception) == 0
+    text = " ".join(m.value for m in app.markdown)
+    assert "\u20ac" in text and "Currency" in text
+    app.radio(key="cfp_target").set_value("worst").run()
+    assert len(app.exception) == 0
+    assert "Lademacher Commodities" in text
