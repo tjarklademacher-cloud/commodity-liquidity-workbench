@@ -12,6 +12,7 @@ import pytest
 from core.advanced_scenario import (
     MARGIN_PRESETS,
     auto_im_multipliers,
+    buffer_sensitivities,
     default_advanced_settings,
     legacy_equivalent_scenario,
     neutral_settings,
@@ -483,3 +484,21 @@ def test_config_rejects_bad_files(default_positions, default_receivables, defaul
     data = json.loads(dump_config(_config(default_positions, default_receivables, default_terms)))
     with pytest.raises(ConfigError, match=message):
         load_config(mutate(data))
+
+
+def test_buffer_sensitivities_one_at_a_time(default_positions, default_receivables, snapshot, default_terms):
+    """Each row is relative to the active case; cash and margin line moves are additive one for one here
+    (both feed liquid resources directly and nothing else depends on them at +14%)."""
+    s = default_advanced_settings()
+    shocks = {t: 0.14 for t in REQUIRED_TICKERS}
+    spec = ScenarioSpec(name="A", futures_shocks=shocks,
+                        im_multipliers=auto_im_multipliers(shocks, default_terms, None, True))
+    rows = buffer_sensitivities(default_positions, default_receivables, snapshot, default_terms, s, spec)
+    base = rows[0].net_liquidity_buffer
+    assert rows[0].label == "Active scenario" and rows[0].change == 0.0
+    by = {r.label: r for r in rows}
+    assert by["Unrestricted cash +5M"].change == pytest.approx(5e6, abs=0.01)
+    assert by["Margin financing line +10M"].change == pytest.approx(10e6, abs=0.01)
+    assert by["Initial margin requirement x1.5 (all commodities)"].change < 0
+    for r in rows[1:]:
+        assert r.change == pytest.approx(r.net_liquidity_buffer - base, abs=1e-6)

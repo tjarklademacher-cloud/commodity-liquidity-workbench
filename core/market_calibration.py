@@ -21,8 +21,15 @@ import pandas as pd
 from pydantic import BaseModel
 
 from core.advanced_schemas import SimulationMethod
-from core.data_feed import SAMPLE_CALIBRATION
-from core.schemas import COMMODITY_SPECS, REQUIRED_TICKERS, CommoditySpec, InventoryPosition, MarketQuote
+from core.data_feed import SAMPLE_CALIBRATION, _build_load_result
+from core.schemas import (
+    COMMODITY_SPECS,
+    REQUIRED_TICKERS,
+    CommoditySpec,
+    InventoryPosition,
+    MarketLoadResult,
+    MarketQuote,
+)
 
 CALIBRATION_WINDOWS: dict[str, int | None] = {"60 days": 60, "125 days": 125, "250 days": 250, "Maximum": None}
 MIN_OBSERVATIONS = 20
@@ -213,6 +220,19 @@ def generate_factor_sample(
         raw = cfg["start"] * np.exp(log_path)
         data[t] = np.round(raw * cfg["target_end"] / raw[-1], 4 if t in ("HG=F", "KC=F", "SB=F") else 2)
     return pd.DataFrame(data, index=pd.DatetimeIndex(dates, name="Date"))
+
+
+FACTOR_SAMPLE_LABEL = "Factor Sample (Synthetic)"
+
+
+def load_factor_sample_market_data(winsorize_sigma: float | None = 5.0) -> MarketLoadResult:
+    """The factor sample as a market load (synthetic, illustrative loadings; the seed-42 file is untouched)."""
+    raw = generate_factor_sample().reset_index()
+    return _build_load_result(
+        raw, source_label=FACTOR_SAMPLE_LABEL, winsorize_sigma=winsorize_sigma,
+        status_message="Synthetic factor sample (seed 7, market loading 0.35, sector loading 0.35). "
+                       "Correlations are assumptions, not estimates.",
+    )
 
 
 class BacktestResult(BaseModel):

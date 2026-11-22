@@ -33,7 +33,7 @@ tests/  pytest suite, including Streamlit AppTest end-to-end runs
 
 | Module | What it answers | Logic in plain terms |
 | --- | --- | --- |
-| **Overview** | Is the facility healthy right now? | Net liquidity buffer across parallel shocks with regime shading, a treasury briefing built from the current numbers, and the eligible collateral mix. A verdict row above all tabs shows the active-stress buffer, headroom, availability used, LaR 95% and the squeeze breakeven. |
+| **Overview** | Is the facility healthy right now? | Net liquidity buffer across parallel shocks with regime shading, a treasury briefing built from the current numbers, and the eligible collateral mix. A verdict row above all tabs shows the active-stress buffer, headroom, margin cash need, margin financing and LaR 95% (first unfunded day in advanced mode). Below: risk drivers (one change at a time) and a baseline / active / alternative scenario comparison. |
 | **Borrowing base** | What can we borrow today? | Eligible inventory plus eligible receivables, bridged step by step from gross values, with CSV and JSON certificate export. |
 | **Inventory** | Why is each advance rate what it is? | Haircut = base rate + volatility add-on above a reference vol + penalty for the unhedged share, clamped to 10% to 65%. |
 | **Receivables** | How much does buyer concentration cost? | Receivables over 90 days past due are excluded; investment-grade buyers advance at 85%, others at 75%. No single buyer may exceed a cap percentage of the borrowing base, which is solved as a fixed point because the cap depends on the base it helps set. |
@@ -53,7 +53,29 @@ tests/  pytest suite, including Streamlit AppTest end-to-end runs
 - **Credit committee report.** One-click self-contained HTML report (verdict, borrowing base, stress
   sweep, LaR, runway, funding plan) that opens without the app.
 
-**Key assumptions**
+**Legacy and advanced model**
+
+The sidebar **Model mode** switches between the audited legacy model (default) and an advanced model. With
+neutral advanced settings (fractional contracts, baseline-plus-step-up IM, zero basis) both give the same
+buffer, and a reconciliation table shows how each advanced assumption moves the result.
+
+- **Exchange-style margin.** Whole futures contracts with the residual left unhedged; variation margin and
+  initial margin kept separate; initial margin per contract per commodity, stress multipliers, a per-commodity
+  step-up trigger, and margin stress presets. Posted initial margin is never counted as liquidity. Default
+  per-contract figures are illustrative (a share of contract notional), not current exchange requirements.
+- **Basis risk.** Physical price = futures x (1 + basis); opening basis, basis shocks and liquidation discounts
+  per commodity, with presets. Economic P&L (physical, futures, combined) is shown against cash, and hedge
+  ratios are shown on a Pareto chart without hidden weights.
+- **Daily cash-flow ledger.** Day-by-day margin, collections, interest, borrowing base cure with grace, and
+  funding with delays; first unfunded day, peak gap and a downloadable ledger. A cash-flow Monte Carlo runs the
+  same ledger over simulated paths.
+- **Calibration.** 60 / 125 / 250 day or full windows, PSD repair, Gaussian, block bootstrap or stressed
+  covariance, a synthetic factor sample with explicit correlations, a provenance panel and a counterfactual
+  backtest of the margin forecast.
+- **Saved configurations.** Download every input as versioned JSON and restore it later; uploads are validated
+  field by field and never executed.
+
+**Key assumptions (legacy model)**
 
 - Quantities, the receivables ledger and the drawn balance are held fixed across scenarios.
 - Haircuts use the current 30-day realized volatility; a price shock does not change volatility.
@@ -89,6 +111,8 @@ in the test suite as a regression check on the engines.
 - **Live feed (optional).** Yahoo Finance via `yfinance`, no API key. The response is checked for empty
   frames (how rate limits surface), missing tickers, short history and non-positive prices. Any failure
   or a 10-second timeout falls back to the bundled data, and the header shows which source is active.
+- **Factor sample (optional).** A second synthetic series with stated factor loadings, generated in memory,
+  for realistic co-movement offline. It is labelled synthetic wherever it is used.
 - **Custom CSV (optional).** Columns `Date, GC=F, HG=F, LBR=F, CC=F, KC=F, SB=F`, in exchange quote units. Invalid files fall back to the
   bundled data with a message. Short files use reference volatilities when 30-day vol cannot be computed.
 - **Caching.** Live loads are cached for 15 minutes; the stress sweep, heatmap, replay and Monte Carlo

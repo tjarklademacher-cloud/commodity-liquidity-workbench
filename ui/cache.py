@@ -187,4 +187,52 @@ def market_data_status(market: MarketLoadResult) -> tuple[str, str]:
         return "Live market data", "neutral"
     if market.source_label.startswith("Custom"):
         return "Uploaded CSV data", "neutral"
+    if market.source_label.startswith("Factor"):
+        return "Synthetic factor sample", "neutral"
     return "Bundled sample data", "neutral"
+
+
+# ---- Advanced model -----------------------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def cached_factor_market(winsorize: bool) -> MarketLoadResult:
+    from core.market_calibration import load_factor_sample_market_data
+
+    return load_factor_sample_market_data(winsorize_sigma=_winsor(winsorize))
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_calibration(prices_df: pd.DataFrame, window_label: str, winsorize: bool):
+    from core.market_calibration import calibrate
+
+    return calibrate(prices_df, window_label, _winsor(winsorize))
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_backtest(positions_json: str, snapshot_json: str, prices_df: pd.DataFrame, window_days: int,
+                    winsorize: bool):
+    from core.market_calibration import backtest_margin_forecast
+
+    positions = [InventoryPosition.model_validate(d) for d in json.loads(positions_json)]
+    snapshot = {t: MarketQuote.model_validate(q) for t, q in json.loads(snapshot_json).items()}
+    return backtest_margin_forecast(prices_df, positions, snapshot, horizon_days=5, window_days=window_days,
+                                    winsorize_sigma=_winsor(winsorize))
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_cashflow_monte_carlo(
+    positions_json: str, receivables_json: str, terms_json: str, snapshot_json: str,
+    settings_json: str, cashflow_json: str, prices_df: pd.DataFrame, window_label: str, method: str,
+    n_paths: int, basis_vol: float, im_mults_json: str, apply_trigger_rule: bool, winsorize: bool,
+):
+    from core.advanced_schemas import AdvancedSettings, CashflowSettings
+    from core.cashflow_engine import run_cashflow_monte_carlo
+
+    positions, receivables, terms, snapshot = _load_inputs(positions_json, receivables_json, terms_json, snapshot_json)
+    calibration = cached_calibration(prices_df, window_label, winsorize)
+    return run_cashflow_monte_carlo(
+        positions, receivables, snapshot, terms, AdvancedSettings.model_validate_json(settings_json),
+        CashflowSettings.model_validate_json(cashflow_json), calibration, prices_df, method=method,
+        n_paths=n_paths, basis_vol_annual=basis_vol, base_im_multipliers=json.loads(im_mults_json),
+        apply_trigger_rule=apply_trigger_rule, winsorize_sigma=_winsor(winsorize),
+    )

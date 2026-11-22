@@ -68,7 +68,7 @@ Environment facts that matter:
 ## 3. Repository layout
 
 ```
-app.py                   877 lines  Streamlit entry point: sidebar, header, verdict, 10 tabs (presentation only)
+app.py                  1246 lines  Streamlit entry point: sidebar, header, verdict, 10 tabs (presentation only)
 core/                    pure Python models; MUST NOT import streamlit or plotly (enforced by tests)
   __init__.py             lazy PEP 562 exports of the public API (avoids runpy double-import warning)
   schemas.py              Pydantic v2 models, LiquidityRegime, COMMODITY_SPECS, defaults, presets
@@ -80,15 +80,24 @@ core/                    pure Python models; MUST NOT import streamlit or plotly
   hedge_optimizer.py      hedge-ratio frontier
   crisis_replay.py        real crisis episodes from Yahoo Finance applied to today's book
   contingency.py          contingency funding plan: reverse stress, triggers, sized remedial actions
+  advanced_schemas.py     advanced model inputs and results (margin profiles, basis, scenario spec, cash flow)
+  margin_engine.py        whole-contract hedges, variation margin, per-contract initial margin, defaults
+  basis_risk.py           physical vs futures prices, economic P&L identity, basis presets A to E
+  advanced_scenario.py    advanced single scenario, legacy reconciliation, margin presets, sensitivities
+  cashflow_engine.py      daily cash-flow ledger (vectorized over paths) and cash-flow Monte Carlo
+  market_calibration.py   calibration windows, PSD repair, simulation methods, factor sample, backtest
+  scenario_comparison.py  baseline / active / alternative comparison and versioned JSON configurations
 ui/                      presentation layer
   theme.py                design tokens, STATUS colours, Plotly layout, CSS, currency context, formatters,
                           HOUSE_NAME and AUTHOR constants, bridge/regime label helpers
-  charts.py               all Plotly figure builders (15)
+  charts.py               all Plotly figure builders (22)
+  advanced_views.py       advanced settings widgets, margin and basis editors, dashboards, ledger,
+                          comparison and configuration save / restore callbacks
   components.py           header, verdict, KPI rows, panels, editors, audit rows, briefing, author panel
   cache.py                st.cache_data wrappers and data-status label
   report.py               self-contained HTML credit committee report
 data/sample_prices.csv   260 business days ending 2026-11-20, six tickers, generated with seed 42
-tests/                   154 tests (see section 10)
+tests/                   216 tests (see section 10)
 .streamlit/config.toml   native light theme (mirrors ui/theme.py), headless server, error detail level
 requirements.txt         bounded to tested major versions
 README.md                public brief; CLAUDE.md short rules; PROJECT_CONTEXT.md this file
@@ -377,7 +386,26 @@ Do not rename these keys; tests and callbacks depend on them.
 | `replay_source` | select (Replays tab) | `loaded` |
 | `reset_btn` | button (callback) | |
 
-Other session state: `editor_nonce` (incremented only by Reset and Apply preset), `inventory_df`,
+Advanced model keys (all reset by `reset_btn`; defaults in `ui/advanced_views.ADVANCED_WIDGET_DEFAULTS`):
+
+| Key | Widget (tab) | Default |
+| --- | --- | --- |
+| `model_mode` | sidebar radio Legacy / Advanced | `legacy` |
+| `contract_policy`, `im_mode`, `release_excess_im`, `apply_trigger_rule`, `ml_cut_pct` | Stress sweep, margin expander | `nearest`, `per_contract`, True, True, 0 |
+| `margin_preset` + `apply_margin_preset_btn` | Stress sweep | first preset |
+| `basis_preset` + `apply_basis_preset_btn` | Hedging, basis expander | A. Stable basis |
+| `calib_window`, `sim_method`, `basis_vol`, `cf_mc_paths`, `bt_window` | Monte Carlo LaR | 250 days, gaussian, 0, 2000, 125 |
+| `cf_horizon`, `cf_ramp`, `cf_rev_rate`, `cf_ml_rate`, `cf_day_count`, `cf_rev_delay`, `cf_ml_delay`, `cf_cure_grace`, `cf_invoice_terms`, `cf_overdue_delay`, `cf_noncollected`, `cf_repay_ml`, `cf_sweep`, `cf_min_cash_m`, `cf_ml_cut_day` | Funding plan, ledger expander | 20, 5, 7.0, 8.0, 360, 1, 0, 2, 60, 15, [], True, True, 0, 1 |
+| `save_alt_btn`, `clear_alt_btn` | Overview comparison | |
+| `dl_config`, `config_upload`, `apply_config_btn` | sidebar Configuration | |
+
+Advanced editors: `margin_editor_{nonce}` over `margin_df` and `basis_editor_{nonce}` over `basis_df` (latest
+edits in `margin_edited_df` / `basis_edited_df`). They are always rendered (inside collapsed expanders) so
+edits survive switching model mode. Other advanced state: `compare_alt` (saved alternative ScenarioSpec JSON),
+`active_spec_json`, `terms_base` (facility terms from a restored configuration that have no widget),
+`config_error`, `config_message`. Every callback that bumps the nonce first calls `commit_pending_edits`.
+
+Other session state: `editor_nonce` (incremented only by Reset, the presets and Apply configuration), `inventory_df`,
 `receivables_df` (canonical editor baselines), `inventory_edited_df`, `receivables_edited_df` (latest edits;
 Apply preset copies them into the baselines before bumping the nonce), `active_regime` (string, used by tests).
 
@@ -468,11 +496,13 @@ the house is illustrative.
 
 ## 10. Testing
 
-Run `.venv/bin/python -m pytest`. 154 tests, no warnings:
+Run `.venv/bin/python -m pytest`. 216 tests, no warnings:
 
 | File | Tests | Guards |
 | --- | ---: | --- |
-| test_architecture_and_app.py | 30 | core import boundary, banned patterns, no em-dashes, no local paths, chart JSON serialization, Streamlit `AppTest` runs (load, regimes at +14 / 0 / -20, cap tier, presets, reset, editor edits, MC controls, per-commodity overrides, hedging scope, offline crisis replay, margin line, EUR currency, funding plan target), exact tab labels |
+| test_advanced_model.py | 40 | margin rounding and IM, no IM double counting, legacy reconciliation (neutral settings equal legacy on 100 random scenarios; steps sum to the total), cocoa example, margin line financeability, basis identity, presets, Pareto, calibration windows, PSD repair, simulation reproducibility, factor sample, percentile intervals, backtest, three-day ledger hand cases (flat, delayed funding, same-day funding, capacity exhausted, IM trigger, interest, cure grace, collections, reconciliation of cash and debt), cash-flow Monte Carlo, comparison, config round trip and bad files, sensitivities |
+| test_advanced_app.py | 15 | AppTest: legacy default unchanged, switch to advanced, neutral advanced settings show the legacy buffer, settings change results, margin and basis presets, factor feed, save alternative, reset of all advanced state, configuration restore valid and invalid (nothing applied on error) |
+| test_architecture_and_app.py | 37 | core import boundary, banned patterns, no em-dashes, no local paths, chart JSON serialization, Streamlit `AppTest` runs (load, regimes at +14 / 0 / -20, cap tier, presets, reset, editor edits, MC controls, per-commodity overrides, hedging scope, offline crisis replay, margin line, EUR currency, funding plan target), exact tab labels |
 | test_data_feed.py | 29 | sample calibration, cents scaling, vol math, winsorization, cleaning, live loader fallbacks |
 | test_borrowing_base.py | 19 | aging, advance rates, cap tiers, waterfall identity, solver edge cases, 1,000-portfolio fuzz test |
 | test_stress_engine.py | 17 | legacy regimes, IM boundary symmetry, breakevens, mixed shocks, certificate export |
@@ -516,6 +546,12 @@ stress, sweep, tiers, grid, Monte Carlo samples, replay, certificate) and confir
    financing line, author panel and branding, credit committee report, reporting currency; audience =
    trading-house desk; bio "Commodity trade finance and risk analytics"; GitHub only; house name
    "Lademacher Commodities". The margin line defaults to 0 so ground truth stays unchanged.
+9. **Advanced model** (branch `feature/advanced-liquidity-model`, owner's master prompt): exchange-style margin,
+   physical basis, daily cash-flow ledger, calibrated simulation, scenario comparison, saved configurations,
+   Overview hierarchy. Added as a second model mode so the audited legacy model and all ground truth stay
+   untouched; neutral advanced settings reproduce legacy exactly. Default IM figures are illustrative (share of
+   contract notional at the sample price), not exchange notices, because current requirements could not be
+   verified and the prompt forbids invented figures. Kept on the feature branch until reviewed.
 
 ---
 
@@ -524,7 +560,9 @@ stress, sweep, tiers, grid, Monte Carlo samples, replay, certificate) and confir
 - **Bundled data is synthetic**, with independent draws per commodity, so correlations are near zero and
   Monte Carlo tails on the sample are mild (for example P(critical squeeze) 0% at 5 days). Live data gives
   realistic co-movement.
-- **Model simplifications:** quantities, receivables and drawn balance held fixed; price shocks do not change
+- **Advanced model limits:** see section 14.5. The 41-point sweep, heatmap, legacy Monte Carlo, runway, hedge
+  frontier, replays and funding plan always use the legacy engine, in both modes.
+- **Model simplifications (legacy mode):** quantities, receivables and drawn balance held fixed; price shocks do not change
   volatility (except in crisis replays, which use observed vol); IM step-up is a single fraction of baseline
   IM triggered by the largest move, not an exchange per-contract or SPAN-style model; no basis risk (futures
   and physical move together); margin settled in cash on the shock day; runway IM step-up is not
@@ -554,13 +592,11 @@ Open items:
 3. Consider raising the Streamlit floor in `requirements.txt` to the tested version (1.67) to lock in the
    editor behaviour, or test on 1.52.
 
+4. Review and merge `feature/advanced-liquidity-model` (section 14), then redeploy from `main`.
+5. Advanced follow-ups: run the sweep, heatmap and hedge frontier through the advanced engine; volatility-
+   dependent IM; replace illustrative IM defaults with dated exchange notices entered as user assumptions.
+
 Ideas offered but not yet chosen by the owner (good next candidates):
-- **Exchange-style initial margin:** per-commodity IM per contract (editable, seeded from published ICE/CME
-  margin notices and labelled as such), rising with volatility, replacing the flat 20% step-up. ICE raised
-  cocoa margins several times in 2024 (for example a 2024-03-15 notice listed 6,910 USD initial margin for the
-  May 2024 contract).
-- **Basis risk:** per-commodity basis (cash minus futures) shock so hedges are imperfect.
-- **Save and load your own book:** download / upload positions, receivables, facility and scenario as one file.
 - Other ideas raised earlier: funding cost and carry, receivable dilution reserves (left out because it changes
   calibrated figures), LinkedIn link in the author panel if the owner provides a URL.
 
@@ -573,3 +609,74 @@ How to work on this project (the owner's preferred workflow):
 - After changes: run the full test suite, check affected tabs in a browser at 1440 x 900 (restart the server
   after editing `ui/` or `core/`), commit with the attribution line, `git push`, then confirm the live app
   redeployed.
+
+---
+
+## 14. Advanced model (branch `feature/advanced-liquidity-model`)
+
+Selected with the sidebar **Model mode** (default Legacy). Legacy mode is byte-for-byte the audited model; all
+ground truth in section 6 is unchanged (fingerprint of every core output compared before and after).
+
+### 14.1 Exchange-style margin (`core/margin_engine.py`)
+- Hedges trade in whole contracts (`contract_policy`: nearest, floor, ceil, or continuous = legacy). The
+  residual quantity stays unhedged and moves the borrowing base like unhedged inventory.
+- VM = signed contracts x multiplier x (F1 - F0); shorts receive in a fall. VM nets across commodities.
+- IM per commodity = |contracts| x IM per contract x stress multiplier + fixed add-on. Posted IM sits at the
+  exchange and is never counted as liquidity; only the change moves cash (additional IM out, excess released
+  in if `release_excess_im`). `apply_trigger_rule` multiplies a commodity's IM by (1 + step-up size) when its
+  own move reaches the sidebar trigger (the per-commodity analogue of the legacy rule).
+- Default IM per contract is **illustrative**: 10% gold, 8% copper, 12% lumber, 15% cocoa, 10% coffee, 8% sugar
+  of contract notional at the bundled sample price on 2026-11-20, rounded to 100 USD (gold 27,100; copper
+  8,700; lumber 1,900; cocoa 12,200; coffee 10,300; sugar 1,500). Edited rows become `user` assumptions.
+- Margin line: capacity = limit x (1 - cut); it funds financeable VM payable and additional IM only, never a
+  deficiency cure.
+- Margin presets (illustrative, not exchange history): price shock only; IM x1.5 with no price move; +15%
+  rally with IM x1.5; softs IM x1.75; cocoa +25% with IM x1.6; margin line cut 50%.
+
+### 14.2 Basis (`core/basis_risk.py`)
+Basis = physical minus futures as a percent of futures. Physical P1 = F1 x (1 + b0 + db); collateral uses
+P1 x (1 - liquidation discount). Economic P&L identity: physical + futures = basis P&L + unhedged price P&L
+(liquidation cost reported separately). Presets A to E are illustrative. The Hedging tab shows economic P&L
+against cash and a Pareto view (worst-case buffer vs unhedged crash loss) with no weights; margin need at +20%
+and basis exposure are reported per ratio.
+
+### 14.3 Daily cash-flow ledger (`core/cashflow_engine.py`)
+Daily order: price move and VM, IM change, collections, interest (ACT/360 or 365), borrowing base and
+deficiency (cure after grace), funding arrivals, repayments (margin line from margin receipts, surplus swept to
+revolver), new funding requests (revolver limited by permitted borrowing, margin line by capacity), shortfall =
+cash below the minimum after same-day funding. Available liquidity = cash + funds in transit + unused revolver.
+Collections rule (illustrative): current invoices at invoice terms, overdue at the overdue delay, ineligible or
+listed buyers never. Scenario moves ramp linearly over `ramp_days`. Hand-checked three-day cases are in
+`tests/test_advanced_model.py`.
+
+### 14.4 Calibration and simulation (`core/market_calibration.py`)
+Windows 60 / 125 / 250 days / maximum over joint returns; covariance repaired to the nearest PSD matrix if
+needed; reference vols when fewer than 20 observations. Methods: Gaussian, block bootstrap (5 days), stressed
+covariance (vol x1.5, correlation 0.6, 50% weight). Factor sample feed: synthetic, seed 7, market loading 0.35,
+sector loading 0.35, same end prices as the seed-42 file (which is not modified). Counterfactual backtest of the
+5-day hedge VM forecast (overlapping windows; indicative only; on synthetic feeds it checks consistency only).
+LaR sampling intervals use order statistics.
+
+### 14.5 Reference figures and discrepancies (default book, +14% parallel, advanced defaults)
+- Advanced buffer -2.61M vs legacy -1.79M. Reconciliation: whole-contract rounding 0.00; per-contract IM model
+  -0.82 (posted 10.11M vs legacy baseline 6.0M; additional 2.02M vs legacy step-up 1.20M); basis, liquidation
+  and margin line steps 0.00 at defaults.
+- Without the trigger rule the advanced buffer is -0.59M (no IM increase at +14%).
+- Ledger: first unfunded day 3 with a one-day revolver delay; the 140M facility limit binds by day 5 and a 2.7M
+  gap persists until overdue collections on day 15. At -20% VM receipts repay the revolver, so the ledger shows
+  no deficiency cure, while the instantaneous legacy model shows a 6.83M cure: the two answer different
+  questions (end-of-day snapshot vs path with receipts applied).
+- Cash-flow Monte Carlo (2,000 paths, Gaussian, 250 days, seed 21): P(any unfunded day) about 23%.
+- Sensitivities at +14%: IM x1.5 -6.06M; hedge 10 points lower +1.78M; margin line +10M +10.00M; cash +5M
+  +5.00M; basis -5% and AR advance -10 points 0.00 (borrowing base above the facility limit, so collateral
+  changes do not move availability).
+- Limits: sweep, heatmap, legacy Monte Carlo, runway, hedge frontier, replays and funding plan remain legacy
+  engine; IM does not depend on simulated volatility; no intraday calls, cross-margining, fees or taxes;
+  collections rule and all basis values are assumptions.
+
+### 14.6 Saved configurations (`core/scenario_comparison.py`)
+`WorkbenchConfig` JSON, `kind` = commodity-liquidity-workbench, `version` = 1: model mode, positions (exactly
+six), receivables, facility terms, margin, basis, scenario extras, trigger rule, cash-flow settings, scenario
+and simulation state, reporting currency. Market data is not included. Restore validates everything (size
+limit 1 MB, UTF-8, JSON, kind, version, Pydantic, UI tier checks) before changing any state; nothing in the
+file is executed.

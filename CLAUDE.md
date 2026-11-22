@@ -28,6 +28,14 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 | `core/hedge_optimizer.py` | Hedge-ratio frontier against the 41-point sweep |
 | `core/crisis_replay.py` | Real crisis episodes from Yahoo Finance applied to today's book |
 | `core/contingency.py` | Contingency funding plan: reverse stress, triggers, sized remedial actions |
+| `core/advanced_schemas.py` | Advanced model inputs/results: MarginProfile, MarginSettings, BasisAssumption, ScenarioSpec, CashflowSettings |
+| `core/margin_engine.py` | Whole contracts, VM, per-contract IM, illustrative default margin settings |
+| `core/basis_risk.py` | Physical vs futures prices, economic P&L identity, basis presets |
+| `core/advanced_scenario.py` | Advanced scenario, legacy reconciliation, margin presets, trigger rule, sensitivities |
+| `core/cashflow_engine.py` | Daily cash-flow ledger and cash-flow Monte Carlo |
+| `core/market_calibration.py` | Calibration windows, PSD repair, simulation methods, factor sample, backtest |
+| `core/scenario_comparison.py` | Scenario comparison and versioned JSON configurations (load_config validates) |
+| `ui/advanced_views.py` | Advanced widgets, margin/basis editors, dashboards, comparison, config callbacks |
 | `ui/report.py` | Self-contained HTML credit committee report (built on download click) |
 | `ui/theme.py` | Design system: light institutional tokens (mirrored in `.streamlit/config.toml`), semantic STATUS colours, commodity palette, Plotly layout, minimal CSS for custom HTML and `panel_*` containers |
 | `ui/charts.py` | The original six Plotly figures plus gauge, donut, regime ribbon, heatmap, MC, correlation, replay |
@@ -46,6 +54,8 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 
 - Default six-commodity book (`tests/test_default_book.py`): BB $144.94M (Barry capped, $2.06M cutback),
   +14% NLB -$1.79M critical, -20% cure $6.83M, breakevens +12.09% / -12.72%, sweep 13/12/8/8.
+- Advanced model (default settings, +14%, trigger rule on): buffer -$2.61M, reconciliation step "Per-contract
+  initial margin model" -0.82M, ledger first unfunded day 3. Neutral advanced settings must equal legacy.
 - Legacy four-commodity book pinned in `tests/conftest.py` (`positions`, `receivables`, `terms`, `sweep`):
   BB $114.12M, +14% NLB -$1.22M, breakevens +12.41% / -5.45%, sweep 15/7/11/8. Do not change these.
 - Coffee (KC=F) and sugar (SB=F) are quoted in cents; `CommoditySpec.quote_scale=0.01` converts on load.
@@ -84,6 +94,11 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
   history length and positivity; any failure falls back to `data/sample_prices.csv`.
 - Live loads cached in `app.py` with `@st.cache_data(ttl=900, show_spinner=False)`.
 
+- Model mode: `model_mode` "legacy" (default) or "advanced". Legacy outputs must not change. Advanced editors
+  `margin_editor_{nonce}` / `basis_editor_{nonce}` are always rendered (collapsed expanders) so edits survive
+  mode switches; callbacks that bump the nonce call `commit_pending_edits` first. Reset clears all advanced state.
+- Never invent exchange margins, basis, prices or rates: defaults are labelled illustrative; edited values are
+  `assumption_type="user"`. Uploaded configurations are data only (`load_config`), validated before any state changes.
 - `evaluate_shock_matrix` must stay identical to `run_stress_scenario`; `tests/test_scenario_analytics.py`
   checks it on random mixed shocks. If you change any stress formula, change both.
 - Custom HTML goes through `_html()` / single-line strings so Markdown never renders indented HTML as code.

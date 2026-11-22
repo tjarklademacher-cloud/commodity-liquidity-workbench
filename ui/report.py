@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import html
+from collections.abc import Sequence
 from datetime import datetime, timezone
+from typing import Any
 
 import plotly.graph_objects as go
+from plotly.offline import get_plotlyjs
 
 from core.schemas import (
     BorrowingBaseResult,
@@ -19,6 +22,9 @@ from core.schemas import (
 )
 from ui.charts import (
     build_borrowing_base_waterfall,
+    build_ledger_chart,
+    build_liquidity_fan_chart,
+    build_margin_contribution_chart,
     build_mc_distribution_chart,
     build_runway_fan_chart,
     build_stress_sweep_chart,
@@ -52,8 +58,9 @@ def _table(headers: list[str], rows: list[list[str]], numeric_from: int = 1) -> 
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
 
-def _fig(fig: go.Figure, first: bool) -> str:
-    return localize_figure(fig).to_html(full_html=False, include_plotlyjs=True if first else False,
+def _fig(fig: go.Figure, first: bool = False) -> str:
+    """Figure markup; plotly.js itself is inlined once in the document head."""
+    return localize_figure(fig).to_html(full_html=False, include_plotlyjs=False,
                                         config={"displaylogo": False, "responsive": True})
 
 
@@ -69,8 +76,14 @@ def build_report_html(
     plan: ContingencyPlan,
     scenario: str,
     explanation: str,
+    advanced: dict[str, Any] | None = None,
+    comparison: Sequence[Any] | None = None,
+    model_label: str = "Legacy",
 ) -> str:
-    """Render the report in `currency`. Safe to call from a download-button thread (sets its own currency)."""
+    """Render the report in `currency`. Safe to call from a download-button thread (sets its own currency).
+
+    `advanced` (advanced mode only) carries adv, recon, sens, run, ledger_df, cf, cfmc, calibration and margin;
+    `comparison` is the list of ComparisonColumn from the Overview."""
     with using_currency(currency):
         status = regime_status(stress.regime)
         color, bg = STATUS[status]
@@ -123,10 +136,98 @@ def build_report_html(
              + "<h3>Early-warning triggers (parallel moves)</h3>"
              + _table(["Move", "Regime", "Meaning"], trigger_rows, numeric_from=0)),
         ]
+        nlb_shown, regime_shown, verdict_title = stress.net_liquidity_buffer, stress.regime, "Verdict"
+        if comparison:
+            heads = ("Baseline", "Active", "Alternative")
+            comp_rows = []
+            from core.scenario_comparison import COMPARISON_METRICS
+
+            for key, label in COMPARISON_METRICS:
+                comp_rows.append([html.escape(label)] + [
+                    "n/a" if c.metrics.get(key) is None else fmt_signed_millions(c.metrics[key]) for c in comparison])
+            comp_rows.append(["Regime"] + [regime_label(c.regime) for c in comparison])
+            sections.insert(0, (f"Scenario comparison ({html.escape(model_label.lower())} model)",
+                                "<p>" + "; ".join(f"{h}: {html.escape(c.label)}" for h, c in zip(heads, comparison))
+                                + ".</p>" + _table(["Metric", *heads[:len(comparison)]], comp_rows)))
+        if advanced is not None:
+            adv, cf, cfmc, cal, run = (advanced["adv"], advanced["cf"], advanced["cfmc"], advanced["calibration"],
+                                       advanced["run"])
+            nlb_shown, regime_shown, verdict_title = adv.net_liquidity_buffer, adv.regime, "Verdict (advanced model)"
+            explanation = adv.regime_explanation
+            first = int(run.first_shortfall_day[0])
+            margin_rows = [
+                ["Variation margin, net (+ = received)", fmt_signed_millions(adv.vm_net)],
+                ["Initial margin posted / required", f"{fmt_millions(adv.im_posted_opening)} / "
+                                                     f"{fmt_millions(adv.im_required)}"],
+                ["Additional / released initial margin", f"{fmt_millions(adv.im_additional)} / "
+                                                         f"{fmt_millions(adv.im_released)}"],
+                ["Margin cash need", fmt_millions(adv.margin_cash_need)],
+                ["Margin line capacity / draw", f"{fmt_millions(adv.margin_line_capacity)} / "
+                                                f"{fmt_millions(adv.margin_line_draw)}"],
+                ["Borrowing base deficiency cure", fmt_millions(adv.bb_deficiency_cure)],
+                ["Combined economic P&L", fmt_signed_millions(adv.combined_pnl)],
+            ]
+            line_rows = [[html.escape(ln.name), f"{abs(ln.contracts):,.0f}", f"{ln.residual_hedge_qty:,.0f}",
+                          fmt_signed_millions(ln.vm_cash), f"{ln.im_multiplier:.2f}",
+                          fmt_millions(ln.im_required_1), html.escape(advanced["margin"].profiles[ln.ticker].assumption_type)]
+                         for ln in adv.lines]
+            recon_steps = [[html.escape(r.label), fmt_signed_millions(r.net_liquidity_buffer),
+                            "" if i == 0 else fmt_signed_millions(r.change)] for i, r in enumerate(advanced["recon"])]
+            sens_rows = [[html.escape(r.label), fmt_signed_millions(r.net_liquidity_buffer),
+                          "" if i == 0 else fmt_signed_millions(r.change)] for i, r in enumerate(advanced["sens"])]
+            ledger_rows = [
+                ["First unfunded day", f"Day {first}" if first > 0 else "None"],
+                ["Largest unpaid obligation", fmt_millions(float(run.max_shortfall[0]))],
+                ["Lowest available liquidity", fmt_signed_millions(float(run.min_available_liquidity[0]))],
+                ["Interest over horizon", fmt_millions(float(run.total_interest[0]))],
+                ["Funding delays (revolver / margin line)", f"{cf.revolver_delay_days} / {cf.margin_line_delay_days} days"],
+                ["Rates (revolver / margin line)", f"{cf.revolver_rate:.2%} / {cf.margin_line_rate:.2%}, ACT/{cf.day_count}"],
+            ]
+            mc_rows = [
+                ["Paths / horizon / seed", f"{cfmc.n_paths:,} / {cfmc.horizon_days} days / {cfmc.seed}"],
+                ["Method", html.escape(cfmc.method)],
+                ["P(any unfunded day)", fmt_pct(cfmc.prob_any_shortfall, 2)],
+                ["Liquidity reserve 95% / 99%", f"{fmt_millions(cfmc.reserve_95)} / {fmt_millions(cfmc.reserve_99)}"],
+                ["Lowest liquidity, 5th percentile", fmt_signed_millions(cfmc.min_liquidity_percentiles["p5"])],
+            ]
+            prov_rows = [
+                ["Price source", html.escape(market.source_label)],
+                ["Calibration window", f"{html.escape(cal.window_label)}: {cal.n_obs} observations, "
+                                       f"{cal.start_date} to {cal.end_date}"],
+                ["Covariance repair", "Yes" if cal.psd_repaired else "Not needed"],
+                ["Margin assumptions", "Illustrative unless marked user"],
+            ]
+            days = list(range(cfmc.horizon_days + 1))
+            sections[0:0] = [
+                ("Exchange margin, active scenario (advanced model)",
+                 _fig(build_margin_contribution_chart(adv))
+                 + _table(["Measure", "Value"], margin_rows)
+                 + _table(["Commodity", "Contracts", "Residual qty", "VM", "IM mult.", "IM required", "Assumption"],
+                          line_rows)
+                 + "<h3>Reconciliation from the legacy model</h3>"
+                 + _table(["Step", "Buffer", "Change"], recon_steps)
+                 + "<h3>Sensitivity of the buffer</h3>" + _table(["Change", "Buffer", "Effect"], sens_rows)),
+                ("Daily cash-flow ledger, active scenario", _fig(build_ledger_chart(advanced["ledger_df"], terms), False)
+                 + _table(["Measure", "Value"], ledger_rows)),
+                ("Daily cash-flow simulation",
+                 _fig(build_liquidity_fan_chart(days, cfmc.liquidity_percentiles_by_day, "Available liquidity (USD M)"),
+                      False) + _table(["Measure", "Value"], mc_rows)),
+                ("Data provenance", _table(["Item", "Value"], prov_rows)),
+            ]
+        sections.append(("Methodology and limitations", "<p>" + " ".join([
+            "Legacy model: instantaneous shock, fractional hedge contracts, baseline initial margin plus a step-up "
+            "when the largest move reaches the trigger, physical priced at futures.",
+            "Advanced model (when selected): whole contracts with the residual left unhedged, per-contract initial "
+            "margin with illustrative default rates that are not current exchange requirements, physical basis and "
+            "liquidation discounts as user assumptions, and a daily ledger with funding delays and interest.",
+            "Neither model includes intraday calls, cross-margining, collateral substitution, taxes or fees. "
+            "Bundled price data is synthetic; backtests on it check internal consistency only.",
+        ]) + "</p>"))
         body = "".join(f"<section><h2>{t}</h2>{c}</section>" for t, c in sections)
         return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>{html.escape(HOUSE_NAME)}: credit committee liquidity report</title>
+<script type="text/javascript">{get_plotlyjs()}</script>
 <style>
 body {{ font-family: {FONT_SANS}; color: {COLORS['text']}; background: {COLORS['canvas']}; margin: 0; }}
 main {{ max-width: 1080px; margin: 0 auto; padding: 32px 24px 48px; }}
@@ -149,8 +250,8 @@ footer {{ color: {COLORS['muted']}; font-size: 12px; line-height: 1.5; }}
 <h1>{html.escape(HOUSE_NAME)}: liquidity and borrowing base report</h1>
 <div class="meta">Prepared {generated} with the Commodity Liquidity Workbench. Prices as of {market.as_of_date}
 ({html.escape(market.source_label)}). Scenario: {html.escape(scenario)}.{html.escape(fx_note)}</div>
-<section class="verdict"><h2>Verdict<span class="badge">{regime_label(stress.regime)}</span></h2>
-<div class="big">{fmt_signed_millions(stress.net_liquidity_buffer)}</div>
+<section class="verdict"><h2>{verdict_title}<span class="badge">{regime_label(regime_shown)}</span></h2>
+<div class="big">{fmt_signed_millions(nlb_shown)}</div>
 <p>{html.escape(explanation)}</p>{_table(["Measure", "Value"], verdict_rows)}</section>
 {body}
 <footer>Illustrative book: positions, receivables and facility terms are not real. Model assumptions: quantities,

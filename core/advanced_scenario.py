@@ -246,3 +246,50 @@ def auto_im_multipliers(
             m *= 1.0 + terms.im_stepup_fraction
         out[t] = m
     return out
+
+
+def buffer_sensitivities(
+    positions: Sequence[InventoryPosition],
+    receivables: Sequence[ReceivableItem],
+    market_snapshot: Mapping[str, MarketQuote],
+    terms: FacilityTerms,
+    settings: AdvancedSettings,
+    scenario: ScenarioSpec,
+    specs: Mapping[str, CommoditySpec] = COMMODITY_SPECS,
+) -> list[ReconciliationStep]:
+    """One-at-a-time changes to the active scenario's net liquidity buffer (each relative to the active case)."""
+    base = run_advanced_scenario(positions, receivables, market_snapshot, terms, settings, scenario, specs)
+    b = base.net_liquidity_buffer
+
+    def with_terms(**kw: float) -> FacilityTerms:
+        return FacilityTerms.model_validate({**terms.model_dump(), **kw})
+
+    def with_spec(**kw: object) -> ScenarioSpec:
+        return ScenarioSpec.model_validate({**scenario.model_dump(), **kw})
+
+    cases: list[tuple[str, object]] = [
+        ("Initial margin requirement x1.5 (all commodities)",
+         ("spec", with_spec(im_multipliers={t: 1.5 * scenario.im_multipliers.get(t, 1.0) for t in REQUIRED_TICKERS}))),
+        ("Basis 5% weaker on all commodities",
+         ("spec", with_spec(basis_shocks={t: scenario.basis_shocks.get(t, 0.0) - 0.05 for t in REQUIRED_TICKERS}))),
+        ("Hedge ratio 10 points lower (all commodities)",
+         ("pos", [InventoryPosition(ticker=p.ticker, physical_qty=p.physical_qty,
+                                    hedged_qty=max(0.0, p.hedged_qty - 0.10 * p.physical_qty)) for p in positions])),
+        ("Receivable advance rates 10 points lower",
+         ("terms", with_terms(ar_ig_advance_rate=max(0.0, terms.ar_ig_advance_rate - 0.10),
+                              ar_non_ig_advance_rate=max(0.0, terms.ar_non_ig_advance_rate - 0.10)))),
+        ("Margin financing line +10M", ("terms", with_terms(margin_line_limit=terms.margin_line_limit + 10e6))),
+        ("Unrestricted cash +5M", ("terms", with_terms(unrestricted_cash=terms.unrestricted_cash + 5e6))),
+    ]
+    out = [ReconciliationStep(label="Active scenario", net_liquidity_buffer=b, change=0.0)]
+    for label, (kind, value) in cases:
+        pos, tm, sp = positions, terms, scenario
+        if kind == "spec":
+            sp = value
+        elif kind == "pos":
+            pos = value
+        else:
+            tm = value
+        nlb = run_advanced_scenario(pos, receivables, market_snapshot, tm, settings, sp, specs).net_liquidity_buffer
+        out.append(ReconciliationStep(label=label, net_liquidity_buffer=nlb, change=nlb - b))
+    return out

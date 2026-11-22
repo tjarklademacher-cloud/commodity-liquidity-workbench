@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from core.advanced_scenario import neutral_settings, run_advanced_scenario
+from core.advanced_scenario import auto_im_multipliers, neutral_settings, run_advanced_scenario
 from core.advanced_schemas import (
     AdvancedSettings,
     BasisAssumption,
@@ -67,11 +67,17 @@ def compare_scenarios(
     apply_trigger_rule: bool = True,
     specs: Mapping[str, CommoditySpec] = COMMODITY_SPECS,
 ) -> list[ComparisonColumn]:
+    """Run each scenario. In advanced mode `im_multipliers` are the user's stress multipliers; the per-commodity
+    step-up trigger rule is applied on top (instantaneous view and ledger alike)."""
     use = settings if mode == "advanced" else neutral_settings(settings)
     cols = []
     for spec in scenarios:
         run_spec = spec if mode == "advanced" else ScenarioSpec(name=spec.name, futures_shocks=spec.futures_shocks)
-        r = run_advanced_scenario(positions, receivables, market_snapshot, terms, use, run_spec, specs)
+        instant = run_spec
+        if mode == "advanced" and use.margin.im_mode == "per_contract":
+            instant = ScenarioSpec.model_validate({**run_spec.model_dump(), "im_multipliers": auto_im_multipliers(
+                run_spec.futures_shocks, terms, run_spec.im_multipliers, apply_trigger_rule)})
+        r = run_advanced_scenario(positions, receivables, market_snapshot, terms, use, instant, specs)
         shortfall: float | None = None
         if mode == "advanced" and cashflow is not None:
             fp, bp = deterministic_paths(market_snapshot, use, run_spec, cashflow)

@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import streamlit as st
 from pydantic import ValidationError
 
+from core.advanced_scenario import (
+    auto_im_multipliers,
+    buffer_sensitivities,
+    neutral_settings,
+    reconcile_to_legacy,
+    run_advanced_scenario,
+)
+from core.advanced_schemas import AdvancedSettings, ScenarioSpec
 from core.borrowing_base import calculate_borrowing_base, compare_concentration_cap_tiers
+from core.cashflow_engine import deterministic_paths, ledger_frame, run_cashflow_ledger
+from core.market_calibration import percentile_interval
+from core.scenario_comparison import compare_scenarios
 from core.data_feed import DEFAULT_SAMPLE_CSV_PATH
 from core.haircuts import compute_portfolio_inventory
 from core.schemas import (
@@ -22,7 +35,37 @@ from core.contingency import build_contingency_plan
 from core.crisis_replay import CRISIS_EPISODES
 from core.hedge_optimizer import ALL_COMMODITIES
 from core.stress_engine import run_stress_scenario
+from ui.advanced_views import (
+    MODEL_ADVANCED,
+    MODEL_LABELS,
+    RISK_MEASURE_NOTES,
+    SIM_METHOD_LABELS,
+    apply_uploaded_config,
+    build_config,
+    cashflow_mc_kpis,
+    clear_alternative,
+    commit_pending_edits,
+    init_advanced_state,
+    ledger_kpis,
+    margin_kpis,
+    render_basis_settings,
+    render_calibration_table,
+    render_cashflow_settings,
+    render_comparison,
+    render_ledger_table,
+    render_margin_audit,
+    render_margin_settings,
+    render_provenance,
+    render_simulation_settings,
+    render_steps_table,
+    reset_advanced_state,
+    save_active_as_alternative,
+)
 from ui.cache import (
+    cached_backtest,
+    cached_calibration,
+    cached_cashflow_monte_carlo,
+    cached_factor_market,
     cached_fx_rate,
     cached_crisis_replay,
     cached_custom_market,
@@ -37,6 +80,13 @@ from ui.cache import (
 )
 from ui.charts import (
     build_active_shock_sources_uses_chart,
+    build_backtest_chart,
+    build_economic_pnl_chart,
+    build_ledger_chart,
+    build_liquidity_fan_chart,
+    build_margin_contribution_chart,
+    build_pareto_chart,
+    build_probability_chart,
     build_borrowing_base_waterfall,
     build_buffer_profile_chart,
     build_correlation_heatmap,
@@ -96,6 +146,7 @@ from ui.theme import (
 FEED_SAMPLE = "Calibrated Sample (Offline)"
 FEED_LIVE = "Live Yahoo Finance (yfinance)"
 FEED_UPLOAD = "Upload Custom CSV"
+FEED_FACTOR = "Factor Sample (Synthetic)"
 PRESET_NAMES = list(STRESS_SCENARIO_PRESETS)
 
 WIDGET_DEFAULTS: dict[str, object] = {
@@ -135,6 +186,7 @@ def init_session_state() -> None:
     for key, value in WIDGET_DEFAULTS.items():
         if key not in ss:
             ss[key] = value
+    init_advanced_state(ss)
 
 
 def reset_to_defaults() -> None:
@@ -143,15 +195,13 @@ def reset_to_defaults() -> None:
         ss[key] = value
     ss["inventory_df"] = default_inventory_df()
     ss["receivables_df"] = default_receivables_df()
+    reset_advanced_state(ss)
     ss.editor_nonce += 1
 
 
 def apply_preset() -> None:
     ss = st.session_state
-    if "inventory_edited_df" in ss:
-        ss["inventory_df"] = ss["inventory_edited_df"].copy()
-    if "receivables_edited_df" in ss:
-        ss["receivables_df"] = ss["receivables_edited_df"].copy()
+    commit_pending_edits(ss)
     shocks = STRESS_SCENARIO_PRESETS[ss["preset_name"]]
     values = [int(round(shocks[t] * 100)) for t in REQUIRED_TICKERS]
     if len(set(values)) == 1:
@@ -164,7 +214,8 @@ def apply_preset() -> None:
     ss.editor_nonce += 1
 
 
-FEED_LABELS = {FEED_SAMPLE: "Bundled sample", FEED_LIVE: "Live (Yahoo Finance)", FEED_UPLOAD: "Upload CSV"}
+FEED_LABELS = {FEED_SAMPLE: "Bundled sample", FEED_FACTOR: "Factor sample (synthetic, correlated)",
+               FEED_LIVE: "Live (Yahoo Finance)", FEED_UPLOAD: "Upload CSV"}
 
 
 def side_section(title: str, first: bool = False) -> None:
@@ -172,8 +223,18 @@ def side_section(title: str, first: bool = False) -> None:
     st.sidebar.markdown(f'<div class="{css}">{title}</div>', unsafe_allow_html=True)
 
 
+def sidebar_model_mode() -> str:
+    side_section("Model", first=True)
+    st.sidebar.radio("Model mode", list(MODEL_LABELS), key="model_mode", horizontal=True,
+                     format_func=lambda k: MODEL_LABELS[k],
+                     help="Legacy: the audited instantaneous model. Advanced: whole contracts, per-contract "
+                          "initial margin, physical basis, a daily cash-flow ledger and calibrated simulation. "
+                          "With neutral advanced settings both give the same buffer.")
+    return st.session_state["model_mode"]
+
+
 def sidebar_facility_terms() -> FacilityTerms:
-    side_section("Portfolio and facility", first=True)
+    side_section("Portfolio and facility")
     st.sidebar.number_input("Facility limit (USD M)", min_value=1.0, step=1.0, format="%.1f", key="facility_limit_m")
     st.sidebar.number_input("Drawn balance (USD M)", min_value=0.0, step=1.0, format="%.1f", key="drawn_revolver_m")
     st.sidebar.number_input("Unrestricted cash (USD M)", min_value=0.0, step=0.5, format="%.1f",
@@ -192,6 +253,7 @@ def sidebar_facility_terms() -> FacilityTerms:
     st.sidebar.slider("IM step-up size (% of baseline IM)", 0, 50, step=1, key="im_addon_pct")
     ss = st.session_state
     payload = {
+        **ss.get("terms_base", {}),
         "facility_limit": float(ss["facility_limit_m"]) * 1e6,
         "drawn_revolver": float(ss["drawn_revolver_m"]) * 1e6,
         "unrestricted_cash": float(ss["unrestricted_cash_m"]) * 1e6,
@@ -210,7 +272,7 @@ def sidebar_facility_terms() -> FacilityTerms:
 
 def sidebar_market_feed() -> MarketLoadResult:
     side_section("Market data")
-    mode = st.sidebar.radio("Price source", [FEED_SAMPLE, FEED_LIVE, FEED_UPLOAD], key="feed_mode",
+    mode = st.sidebar.radio("Price source", [FEED_SAMPLE, FEED_FACTOR, FEED_LIVE, FEED_UPLOAD], key="feed_mode",
                             format_func=lambda v: FEED_LABELS[v])
     winsorize = st.sidebar.checkbox("Winsorize daily returns at 5 sigma", key="winsorize",
                                     help="Caps futures roll gaps before computing 30-day volatility.")
@@ -239,6 +301,8 @@ def sidebar_market_feed() -> MarketLoadResult:
                         "status_message": f"Uploaded CSV rejected ({exc}). Using the bundled sample.",
                     }
                 )
+    elif mode == FEED_FACTOR:
+        market = cached_factor_market(winsorize)
     else:
         market = cached_sample_market(winsorize)
     st.sidebar.caption(market.status_message)
@@ -272,6 +336,22 @@ def sidebar_simulation() -> tuple[int, int]:
     return int(ss.get("mc_horizon") or 5), int(ss.get("mc_sims") or 5000)
 
 
+def sidebar_configuration(config_json: str, file_stub: str) -> None:
+    side_section("Configuration")
+    st.sidebar.download_button("Download configuration (JSON)", data=config_json,
+                               file_name=f"workbench_config_{file_stub}.json", mime="application/json",
+                               width="stretch", key="dl_config")
+    st.sidebar.file_uploader("Restore a saved configuration", type=["json"], key="config_upload",
+                             help="Data only: every field is validated and nothing in the file is executed. "
+                                  "Market data is not part of a configuration.")
+    st.sidebar.button("Apply configuration", width="stretch", on_click=apply_uploaded_config, key="apply_config_btn")
+    ss = st.session_state
+    if ss.get("config_error"):
+        st.sidebar.error(f"Configuration not applied. {ss['config_error']}")
+    elif ss.get("config_message"):
+        st.sidebar.success(ss["config_message"])
+
+
 def sidebar_reset() -> None:
     side_section("Reset")
     st.sidebar.button("Reset all inputs to defaults", width="stretch", on_click=reset_to_defaults, key="reset_btn")
@@ -303,6 +383,8 @@ def main() -> None:
     inject_custom_css()
     init_session_state()
 
+    model_mode = sidebar_model_mode()
+    advanced = model_mode == MODEL_ADVANCED
     terms = sidebar_facility_terms()
     market = sidebar_market_feed()
     ccy_code = st.session_state["report_ccy"]
@@ -312,8 +394,6 @@ def main() -> None:
     set_display_currency(currency)
     parallel_shock, per_commodity = sidebar_shock_controls()
     horizon, n_sims = sidebar_simulation()
-    sidebar_reset()
-    render_author_panel()
     is_custom = per_commodity is not None
     ss = st.session_state
 
@@ -341,6 +421,34 @@ def main() -> None:
         for msg in ar_errors:
             st.warning(msg)
 
+    in_use = "" if advanced else " Used when the model mode is Advanced."
+    with tab_stress:
+        with st.expander("Exchange margin assumptions" + ("" if advanced else " (advanced model)")):
+            st.caption("Per-commodity initial margin, contract rounding, margin stress and the margin line."
+                       + in_use)
+            margin_settings, user_mults, margin_errors = render_margin_settings(nonce)
+        for msg in margin_errors:
+            st.warning(msg)
+    with tab_hedge:
+        with st.expander("Physical basis assumptions" + ("" if advanced else " (advanced model)")):
+            basis_map, basis_shocks, liq_discounts, basis_errors = render_basis_settings(nonce)
+            if not advanced:
+                st.caption(in_use.strip())
+        for msg in basis_errors:
+            st.warning(msg)
+    with tab_plan:
+        with st.expander("Daily cash-flow ledger settings" + ("" if advanced else " (advanced model)")):
+            cf_settings, cf_errors = render_cashflow_settings(receivables)
+            if not advanced:
+                st.caption(in_use.strip())
+        for msg in cf_errors:
+            st.warning(msg)
+    with tab_mc:
+        with st.expander("Calibration and simulation settings" + ("" if advanced else " (advanced model)")):
+            render_simulation_settings()
+            st.caption("Calibration window and method drive the cash-flow simulation and the provenance panel. The "
+                       "legacy liquidity-at-risk below always uses the full loaded history." + in_use)
+
     items = compute_portfolio_inventory(positions, market.snapshot)
     bb = calculate_borrowing_base(items, receivables, terms)
     stress = run_stress_scenario(
@@ -353,7 +461,44 @@ def main() -> None:
         sweep, grid, replay = cached_scenario_suite(*inputs, market.prices_df, market.vol_df)
         mc = cached_monte_carlo(*inputs, market.prices_df, horizon, n_sims, bool(ss["winsorize"]))
         runway = cached_runway(*inputs, market.prices_df, n_sims, bool(ss["winsorize"]))
-    ss["active_regime"] = str(stress.regime)
+
+    settings = AdvancedSettings(margin=margin_settings, basis=basis_map)
+    ml_cut = float(ss["ml_cut_pct"]) / 100.0
+    active_spec = ScenarioSpec(name="Active scenario", futures_shocks=dict(stress.shocks_map),
+                               im_multipliers=user_mults, basis_shocks=basis_shocks,
+                               liquidation_discounts=liq_discounts, margin_line_cut_pct=ml_cut)
+    ss["active_spec_json"] = active_spec.model_dump_json()
+    trigger_rule = bool(ss["apply_trigger_rule"])
+    instant_spec = active_spec
+    if settings.margin.im_mode == "per_contract":
+        instant_spec = active_spec.model_copy(update={"im_multipliers": auto_im_multipliers(
+            active_spec.futures_shocks, terms, user_mults, trigger_rule)})
+    calibration = cached_calibration(market.prices_df, ss["calib_window"], bool(ss["winsorize"]))
+    adv = adv_recon = run = ledger_df = cfmc = None
+    if advanced:
+        with st.spinner("Running the advanced model"):
+            adv = run_advanced_scenario(positions, receivables, market.snapshot, terms, settings, instant_spec)
+            adv_recon = reconcile_to_legacy(positions, receivables, market.snapshot, terms, settings, instant_spec)
+            fp, bp = deterministic_paths(market.snapshot, settings, active_spec, cf_settings)
+            run = run_cashflow_ledger(positions, receivables, market.snapshot, terms, settings, cf_settings, fp, bp,
+                                      user_mults, trigger_rule)
+            ledger_df = ledger_frame(run)
+            cfmc = cached_cashflow_monte_carlo(
+                *inputs, settings.model_dump_json(), cf_settings.model_dump_json(), market.prices_df,
+                ss["calib_window"], ss["sim_method"], int(ss["cf_mc_paths"]), float(ss["basis_vol"]) / 100,
+                json.dumps(user_mults, sort_keys=True), trigger_rule, bool(ss["winsorize"]),
+            )
+        sens_settings, sens_spec = settings, instant_spec
+    else:
+        sens_settings = neutral_settings(settings)
+        sens_spec = ScenarioSpec(name="Active scenario", futures_shocks=dict(stress.shocks_map))
+    sensitivities = buffer_sensitivities(positions, receivables, market.snapshot, terms, sens_settings, sens_spec)
+    if not advanced:
+        sensitivities = [s for s in sensitivities if not s.label.startswith(("Basis", "Initial margin requirement"))]
+    active_nlb = adv.net_liquidity_buffer if advanced else stress.net_liquidity_buffer
+    active_regime = adv.regime if advanced else stress.regime
+    active_explanation = adv.regime_explanation if advanced else regime_explanation_text(stress)
+    ss["active_regime"] = str(active_regime)
 
     if is_custom:
         scenario = "Per commodity " + ", ".join(
@@ -377,11 +522,21 @@ def main() -> None:
     usage = terms.drawn_revolver / availability if availability > 0 else float("inf")
     be_up = sweep.upside_squeeze_breakeven_pct
     be_down = sweep.downside_deficiency_breakeven_pct
-    status = regime_status(stress.regime)
+    status = regime_status(active_regime)
+    worst_spec = ScenarioSpec(name=f"Worst parallel shock ({sweep.worst_net_buffer_point.shock_pct:+.0%})",
+                              futures_shocks=dict(sweep.worst_net_buffer_point.shocks_map))
+    alt_spec = ScenarioSpec.model_validate_json(ss["compare_alt"]) if "compare_alt" in ss else worst_spec
+    comparison = compare_scenarios(
+        positions, receivables, market.snapshot, terms, settings, model_mode,
+        [ScenarioSpec(name="Baseline (no shock)", futures_shocks={t: 0.0 for t in REQUIRED_TICKERS}),
+         active_spec, alt_spec],
+        cf_settings if advanced else None, trigger_rule,
+    )
 
     with header:
         render_header(
             [
+                ("Model", MODEL_LABELS[model_mode]),
                 ("Scenario", scenario),
                 ("Cap tier", f"{terms.concentration_cap_pct:.1%}"),
                 ("Monte Carlo", f"{n_sims:,} paths, {horizon}-day"),
@@ -392,44 +547,62 @@ def main() -> None:
             ],
             market_data_status(market),
         )
-        baseline_text = (f"No-shock baseline {fmt_signed_millions(baseline_point.net_liquidity_buffer)}."
-                         if baseline_point is not None else "")
+        baseline_text = (f"No-shock baseline {fmt_signed_millions(comparison[0].metrics['net_liquidity_buffer'])}."
+                         if comparison else "")
+        if advanced:
+            margin_need, vm_part, im_part = adv.margin_cash_need, adv.vm_payable, adv.im_additional
+            line_cap, line_draw = adv.margin_line_capacity, adv.margin_line_draw
+        else:
+            margin_need = stress.vm_outflow + stress.im_addon_outflow
+            vm_part, im_part = stress.vm_outflow, stress.im_addon_outflow
+            line_cap, line_draw = terms.margin_line_limit, stress.margin_line_draw
+        if advanced:
+            first_day = int(run.first_shortfall_day[0])
+            last_card = {
+                "label": "First unfunded day",
+                "value": f"Day {first_day}" if first_day > 0 else "None",
+                "context": f"Daily ledger, {cf_settings.horizon_days} business days. "
+                           f"P(any unfunded day) {fmt_pct(cfmc.prob_any_shortfall, 1)} over {cfmc.n_paths:,} paths",
+                "status": "breach" if first_day > 0 else None, "status_text": "Shortfall",
+            }
+        else:
+            last_card = {
+                "label": f"LaR 95% · {mc.horizon_days}-day",
+                "value": fmt_signed_millions(mc.p05_net_buffer),
+                "context": f"5th percentile buffer over {mc.n_sims:,} paths. "
+                           f"P(critical squeeze) {fmt_pct(mc.prob_critical, 1)}",
+                "status": "breach" if mc.p05_net_buffer < 0 else None, "status_text": "Below zero",
+            }
         render_verdict(
             {
                 "label": "Net liquidity buffer under active stress",
-                "value": fmt_signed_millions(stress.net_liquidity_buffer),
-                "status": status, "status_text": regime_label(stress.regime),
-                "context": f"{regime_explanation_text(stress)} {baseline_text}",
+                "value": fmt_signed_millions(active_nlb),
+                "status": status, "status_text": regime_label(active_regime),
+                "context": f"{active_explanation} {baseline_text}",
             },
             [
                 {
                     "label": "Revolver headroom",
                     "value": fmt_millions(bb.available_headroom),
                     "context": f"Base {fmt_millions(bb.final_borrowing_base)}, limit "
-                               f"{fmt_millions(terms.facility_limit)}, drawn {fmt_millions(terms.drawn_revolver)}",
+                               f"{fmt_millions(terms.facility_limit)}, drawn {fmt_millions(terms.drawn_revolver)}. "
+                               f"Availability used {fmt_pct(usage, 1)}",
                     "status": "breach" if bb.final_borrowing_base < terms.drawn_revolver else None,
                     "status_text": "Deficiency",
                 },
                 {
-                    "label": "Availability used",
-                    "value": fmt_pct(usage, 1),
-                    "context": f"Drawn {fmt_millions(terms.drawn_revolver)} of {fmt_millions(availability)} "
-                               "available (lower of base and limit)",
-                    "status": "breach" if usage > 1.0 else None, "status_text": "Over availability",
+                    "label": "Margin cash need",
+                    "value": fmt_millions(margin_need),
+                    "context": f"Variation margin {fmt_millions(vm_part)}, additional initial margin "
+                               f"{fmt_millions(im_part)} at the active shock",
                 },
                 {
-                    "label": f"LaR 95% · {mc.horizon_days}-day",
-                    "value": fmt_signed_millions(mc.p05_net_buffer),
-                    "context": f"5th percentile buffer over {mc.n_sims:,} paths. "
-                               f"P(critical squeeze) {fmt_pct(mc.prob_critical, 1)}",
-                    "status": "breach" if mc.p05_net_buffer < 0 else None, "status_text": "Below zero",
+                    "label": "Margin financing",
+                    "value": fmt_millions(line_draw),
+                    "context": f"Drawn of {fmt_millions(line_cap)} capacity. Funds margin calls only, "
+                               "never a deficiency cure",
                 },
-                {
-                    "label": "Squeeze breakeven",
-                    "value": fmt_pct(be_up) if be_up is not None else "None to +20%",
-                    "context": "Parallel rally at which the buffer reaches zero. Deficiency breakeven "
-                               + (fmt_pct(be_down) if be_down is not None else "none to -20%"),
-                },
+                last_card,
             ],
         )
         methodology_expander()
@@ -437,13 +610,21 @@ def main() -> None:
     with tab_overview:
         explanation_now = regime_explanation_text(stress)
         report_args = (currency, market, terms, bb, stress, sweep, mc, runway, plan, scenario, explanation_now)
+        report_kwargs = {
+            "comparison": comparison, "model_label": MODEL_LABELS[model_mode],
+            "advanced": ({"adv": adv, "recon": adv_recon, "sens": sensitivities, "run": run, "ledger_df": ledger_df,
+                          "cf": cf_settings, "cfmc": cfmc, "calibration": calibration, "margin": settings.margin}
+                         if advanced else None),
+        }
         col_note, col_btn = st.columns([3, 1], gap="medium")
         with col_note:
             provenance_note("Download a self-contained HTML report of this view for a credit or risk committee: "
-                            "verdict, borrowing base, stress sweep, liquidity-at-risk, runway and funding plan.")
+                            "verdict, scenario comparison, borrowing base, stress sweep, liquidity-at-risk, runway and "
+                            "funding plan" + (", plus margin, ledger, simulation and provenance sections."
+                                              if advanced else "."))
         with col_btn:
             st.download_button(
-                "Credit committee report (HTML)", data=lambda: build_report_html(*report_args),
+                "Credit committee report (HTML)", data=lambda: build_report_html(*report_args, **report_kwargs),
                 file_name=f"liquidity_report_{market.as_of_date.replace('-', '')}_{ccy_code}.html",
                 mime="text/html", width="stretch", key="dl_report", type="primary",
             )
@@ -456,8 +637,12 @@ def main() -> None:
         with col_side:
             with panel("briefing"):
                 section_head("Treasury briefing", "Derived from the current inputs.")
-                findings = [(status, f"<b>{regime_label(stress.regime)}</b> at {scenario.lower()}: "
-                                     f"{regime_explanation_text(stress)}")]
+                findings = [(status, f"<b>{regime_label(active_regime)}</b> at {scenario.lower()}"
+                                     f"{' (advanced model)' if advanced else ''}: {active_explanation}")]
+                findings.append(("neutral", "Parallel squeeze breakeven <b>"
+                                 + (fmt_pct(be_up) if be_up is not None else "none to +20%")
+                                 + "</b>, deficiency breakeven <b>"
+                                 + (fmt_pct(be_down) if be_down is not None else "none to -20%") + "</b>."))
                 cap_point = next(
                     (p for p in sweep.points if p.shock_pct > 0 and p.shocked_bb >= terms.facility_limit), None
                 )
@@ -500,6 +685,23 @@ def main() -> None:
                 st.dataframe(mix, width="stretch", hide_index=True,
                              column_config={"Eligible": _money_column("Eligible"),
                                             "Share": st.column_config.NumberColumn("Share", format="%.1f%%")})
+        with panel("comparison"):
+            section_head("Scenario comparison",
+                         "Baseline, active scenario and a saved alternative, computed with the same engine and "
+                         f"conventions ({MODEL_LABELS[model_mode].lower()} model).")
+            render_comparison(comparison)
+            b1, b2, _ = st.columns([1, 1, 2])
+            with b1:
+                st.button("Save active as alternative", on_click=save_active_as_alternative, width="stretch",
+                          key="save_alt_btn")
+            with b2:
+                st.button("Reset alternative to worst parallel shock", on_click=clear_alternative, width="stretch",
+                          key="clear_alt_btn", disabled="compare_alt" not in ss)
+        with panel("drivers"):
+            section_head("Risk drivers and responses",
+                         "One change at a time against the active scenario's net liquidity buffer"
+                         + (" (advanced model)." if advanced else " (legacy model)."))
+            render_steps_table(sensitivities)
 
     with tab_cert:
         col_main, col_side = st.columns([1.8, 1], gap="medium")
@@ -564,28 +766,67 @@ def main() -> None:
               f"{fmt_pct(be_up) if be_up is not None else 'none in range'}, deficiency breakeven "
               f"{fmt_pct(be_down) if be_down is not None else 'none in range'}. Regime counts: "
               + ", ".join(f"{regime_label(k)} {v}" for k, v in sweep.regime_counts.items()) + ".")
-        col_main, col_side = st.columns([2.1, 1], gap="medium")
-        with col_main:
-            chart(build_active_shock_sources_uses_chart(stress, terms), "chart_sources_uses",
-                  "Cash sources and uses at the active shock", scenario)
-        with col_side:
-            with panel("active_ledger"):
-                section_head("Active shock ledger", scenario)
-                render_audit_rows(
-                    [
-                        ("Shocked borrowing base", fmt_millions(stress.shocked_bb), False),
-                        ("Change vs. baseline", fmt_signed_millions(stress.bb_change), False),
-                        ("Shocked headroom", fmt_millions(stress.shocked_headroom), False),
-                        ("Futures MtM", fmt_signed_millions(stress.futures_mtm_pnl), False),
-                        ("Variation margin call", fmt_millions(stress.vm_outflow), False),
-                        ("Variation margin inflow", fmt_millions(stress.vm_inflow), False),
-                        ("Initial margin step-up", fmt_millions(stress.im_addon_outflow), False),
-                        ("BB deficiency cure", fmt_millions(stress.bb_deficiency_cure), False),
-                        ("Liquid resources", fmt_millions(stress.total_liquid_resources), False),
-                        ("Cash outflows", fmt_millions(stress.total_cash_outflows), False),
-                        ("Net liquidity buffer", f"<b>{fmt_signed_millions(stress.net_liquidity_buffer)}</b>", False),
-                    ]
-                )
+        if advanced:
+            with panel("margin_dashboard"):
+                section_head("Margin dashboard, active scenario (advanced model)",
+                             f"{scenario}. Whole contracts, per-contract initial margin, basis and margin line "
+                             "applied. The 41-point sweep above uses the legacy engine.")
+                render_kpi_row(margin_kpis(adv))
+            col_main, col_side = st.columns([2.1, 1], gap="medium")
+            with col_main:
+                chart(build_margin_contribution_chart(adv), "chart_margin_contrib", "Margin cash by commodity",
+                      "Variation margin paid and additional initial margin (right), variation margin received (left).")
+            with col_side:
+                with panel("adv_ledger"):
+                    section_head("Active shock ledger", "Advanced model")
+                    render_audit_rows([
+                        ("Shocked borrowing base", fmt_millions(adv.shocked_bb), False),
+                        ("Shocked headroom", fmt_millions(adv.shocked_headroom), False),
+                        ("Variation margin received", fmt_millions(adv.vm_receivable), False),
+                        ("Initial margin released", fmt_millions(adv.im_released), False),
+                        ("Margin line draw", fmt_millions(adv.margin_line_draw), False),
+                        ("Variation margin paid", fmt_millions(adv.vm_payable), False),
+                        ("Additional initial margin", fmt_millions(adv.im_additional), False),
+                        ("BB deficiency cure", fmt_millions(adv.bb_deficiency_cure), False),
+                        ("Liquid resources", fmt_millions(adv.total_liquid_resources), False),
+                        ("Cash outflows", fmt_millions(adv.total_cash_outflows), False),
+                        ("Net liquidity buffer", f"<b>{fmt_signed_millions(adv.net_liquidity_buffer)}</b>", False),
+                    ])
+            col_rec, col_sens = st.columns(2, gap="medium")
+            with col_rec:
+                with panel("reconciliation"):
+                    section_head("Reconciliation from the legacy model",
+                                 "Each assumption added in turn; the changes sum exactly to the difference.")
+                    render_steps_table(adv_recon, "Advanced model")
+            with col_sens:
+                with panel("sensitivity"):
+                    section_head("Sensitivity of the buffer", "One change at a time against the active scenario.")
+                    render_steps_table(sensitivities)
+            with st.expander("Margin calculation audit by commodity"):
+                render_margin_audit(adv, settings.margin)
+        else:
+            col_main, col_side = st.columns([2.1, 1], gap="medium")
+            with col_main:
+                chart(build_active_shock_sources_uses_chart(stress, terms), "chart_sources_uses",
+                      "Cash sources and uses at the active shock", scenario)
+            with col_side:
+                with panel("active_ledger"):
+                    section_head("Active shock ledger", scenario)
+                    render_audit_rows(
+                        [
+                            ("Shocked borrowing base", fmt_millions(stress.shocked_bb), False),
+                            ("Change vs. baseline", fmt_signed_millions(stress.bb_change), False),
+                            ("Shocked headroom", fmt_millions(stress.shocked_headroom), False),
+                            ("Futures MtM", fmt_signed_millions(stress.futures_mtm_pnl), False),
+                            ("Variation margin call", fmt_millions(stress.vm_outflow), False),
+                            ("Variation margin inflow", fmt_millions(stress.vm_inflow), False),
+                            ("Initial margin step-up", fmt_millions(stress.im_addon_outflow), False),
+                            ("BB deficiency cure", fmt_millions(stress.bb_deficiency_cure), False),
+                            ("Liquid resources", fmt_millions(stress.total_liquid_resources), False),
+                            ("Cash outflows", fmt_millions(stress.total_cash_outflows), False),
+                            ("Net liquidity buffer", f"<b>{fmt_signed_millions(stress.net_liquidity_buffer)}</b>", False),
+                        ]
+                    )
         with st.expander("Full 41-point sweep table"):
             sweep_df = sweep.to_dataframe()
             view = pd.DataFrame({
@@ -655,6 +896,10 @@ def main() -> None:
         chart(build_mc_distribution_chart(mc), "chart_mc", "Simulated net liquidity buffer",
               f"{mc.n_sims:,} correlated lognormal paths over {mc.horizon_days} trading days, seed {mc.seed}. "
               "Red: paths at or below the 5th percentile.")
+        lar_lo, lar_hi = percentile_interval(mc.net_buffer_samples, 0.05)
+        provenance_note(f"Sampling interval for LaR 95% (95% confidence, order statistics over {mc.n_sims:,} paths): "
+                        f"{fmt_signed_millions(lar_lo)} to {fmt_signed_millions(lar_hi)}. More paths narrow the "
+                        "interval; they do not make the model more accurate. " + RISK_MEASURE_NOTES)
         col_corr, col_vols = st.columns([1.25, 1], gap="medium")
         with col_corr:
             chart(build_correlation_heatmap(mc, COMMODITY_SPECS), "chart_corr", "Return correlation",
@@ -706,6 +951,55 @@ def main() -> None:
                 st.plotly_chart(build_runway_breach_chart(runway), width="stretch", theme=None,
                                 config=PLOTLY_CONFIG, key="chart_runway_prob")
 
+        if advanced:
+            with panel("cf_mc"):
+                section_head("Daily cash-flow simulation (advanced model)",
+                             f"{cfmc.n_paths:,} paths of {cfmc.horizon_days} business days through the daily ledger: "
+                             f"method: {SIM_METHOD_LABELS[cfmc.method]}, {calibration.window_label} calibration, "
+                             f"seed {cfmc.seed}. Funding delays, interest, collections and cure grace included.")
+                render_kpi_row(cashflow_mc_kpis(cfmc))
+                days = list(range(cfmc.horizon_days + 1))
+                col_fan, col_prob = st.columns([2.1, 1], gap="medium")
+                with col_fan:
+                    section_head("Available liquidity by day", "Median with 25th to 75th and 5th to 95th percentiles.")
+                    st.plotly_chart(localize_figure(build_liquidity_fan_chart(
+                        days, cfmc.liquidity_percentiles_by_day, "Available liquidity (USD M)")), width="stretch",
+                        theme=None, config=PLOTLY_CONFIG, key="chart_cf_fan")
+                with col_prob:
+                    section_head("Share of paths with an unfunded day", "Cumulative, by business day.")
+                    st.plotly_chart(build_probability_chart(days, [0.0, *cfmc.prob_shortfall_by_day], "Paths short (%)"),
+                                    width="stretch", theme=None, config=PLOTLY_CONFIG, key="chart_cf_prob")
+        col_prov, col_cal = st.columns([1.6, 1], gap="medium")
+        with col_prov:
+            with panel("provenance"):
+                section_head("Data provenance", "What the simulation is calibrated on.")
+                render_provenance(market, calibration, synthetic=not market.source_label.startswith(("Live", "Custom"))
+                                  or market.used_fallback)
+        with col_cal:
+            with panel("calibrated_vols"):
+                section_head("Calibrated volatility", f"{calibration.window_label} window, annualized.")
+                render_calibration_table(calibration)
+        with st.expander("Counterfactual backtest of the 5-day margin forecast"):
+            st.select_slider("Rolling estimation window (days)", [60, 125, 250], key="bt_window")
+            bt = cached_backtest(inputs[0], inputs[3], market.prices_df, int(ss["bt_window"]), bool(ss["winsorize"]))
+            if bt.n_forecasts == 0:
+                st.info("Not enough price history in the active feed for this window.")
+            else:
+                render_kpi_row([
+                    {"label": "Forecasts", "value": f"{bt.n_forecasts:,}",
+                     "context": f"{bt.horizon_days}-day windows, {bt.window_days}-day estimation"},
+                    {"label": "Breaches", "value": f"{bt.n_breaches:,}",
+                     "context": f"Realized outflow above the {bt.level:.0%} forecast"},
+                    {"label": "Breach rate", "value": fmt_pct(bt.breach_rate, 1),
+                     "context": f"Expected {fmt_pct(bt.expected_rate, 1)}"},
+                ])
+                st.plotly_chart(localize_figure(build_backtest_chart(bt.frame)), width="stretch", theme=None,
+                                config=PLOTLY_CONFIG, key="chart_backtest")
+            provenance_note("Counterfactual: today's hedge book applied to past price moves of the active feed. "
+                            + bt.note + (" The bundled feeds are synthetic, so this checks internal consistency "
+                                         "only, not real-world performance." if not market.source_label.startswith(
+                                             ("Live", "Custom")) or market.used_fallback else ""))
+
     with tab_hedge:
         scope_names = {ALL_COMMODITIES: "All commodities together",
                        **{t: COMMODITY_SPECS[t].name for t in REQUIRED_TICKERS}}
@@ -739,6 +1033,55 @@ def main() -> None:
         chart(build_hedge_frontier_chart(frontier), "chart_hedge", "Hedge ratio trade-off",
               "More hedging protects inventory value and the borrowing base in a fall, but adds variation margin "
               "calls in a rally. The liquidity-optimal ratio ignores price risk; read it against the lower panel.")
+        col_par, col_tab = st.columns([1.4, 1], gap="medium")
+        with col_par:
+            chart(build_pareto_chart(frontier), "chart_pareto", "Liquidity protection against price protection",
+                  "Each point is a hedge ratio. Pareto-efficient ratios: no other ratio has both a better worst-case "
+                  "buffer and a smaller unhedged loss. No weights are applied; the choice between them is a policy "
+                  "decision.")
+        with col_tab:
+            with panel("hedge_objectives"):
+                section_head("Objectives by hedge ratio",
+                             f"Margin need at +20%; basis exposure = hedged notional x {frontier.basis_shock_pct:.0%} "
+                             "(illustrative basis move).")
+                obj = pd.DataFrame({
+                    "Hedge ratio": [r * 100 for r in frontier.ratios],
+                    "Worst buffer": [v / money_divisor() for v in frontier.min_buffer],
+                    "Crash loss": [v / money_divisor() for v in frontier.crash_value_loss],
+                    "Margin need": [v / money_divisor() for v in frontier.max_margin_need],
+                    "Basis exposure": [v / money_divisor() for v in frontier.basis_exposure],
+                    "Efficient": frontier.pareto_efficient,
+                })
+                obj = obj.rename(columns={"Hedge ratio": "Ratio", "Basis exposure": "Basis"})
+                st.dataframe(obj.iloc[::2], width="stretch", hide_index=True, height=420, column_config={
+                    "Ratio": st.column_config.NumberColumn(format="%.0f%%", width="small"),
+                    "Efficient": st.column_config.CheckboxColumn(width="small"),
+                    **{c: st.column_config.NumberColumn(c, format="%+.2f" if c == "Worst buffer" else "%.2f")
+                       for c in ["Worst buffer", "Crash loss", "Margin need", "Basis"]}})
+                st.caption(f"Amounts in {money_unit()}. Every second ratio shown.")
+        if advanced:
+            col_pnl, col_cash = st.columns([1.4, 1], gap="medium")
+            with col_pnl:
+                chart(build_economic_pnl_chart(adv), "chart_econ_pnl", "Economic P&L by commodity, active scenario",
+                      "Physical inventory, futures hedge and combined. Economic value, not cash: the hedge P&L is "
+                      "settled daily as variation margin, the physical P&L only when the inventory is sold.")
+            with col_cash:
+                with panel("econ_vs_cash"):
+                    section_head("Economic result against cash", "Active scenario, advanced model.")
+                    render_audit_rows([
+                        ("Physical inventory P&L", fmt_signed_millions(adv.physical_pnl), False),
+                        ("Futures hedge P&L", fmt_signed_millions(adv.futures_pnl), False),
+                        ("Combined economic P&L", f"<b>{fmt_signed_millions(adv.combined_pnl)}</b>", False),
+                        ("of which basis", fmt_signed_millions(adv.basis_pnl), False),
+                        ("of which unhedged price exposure", fmt_signed_millions(adv.residual_price_pnl), False),
+                        ("Liquidation discount (collateral only)", fmt_signed_millions(-adv.liquidation_discount_cost),
+                         False),
+                        ("Cash today: variation margin, net", fmt_signed_millions(adv.vm_net), False),
+                        ("Cash today: initial margin change", fmt_signed_millions(adv.im_released - adv.im_additional),
+                         False),
+                    ])
+                    st.caption("A fully hedged book can be flat economically and still need cash today: the hedge "
+                               "loss is paid at once while the offsetting physical gain waits for the sale.")
 
     with tab_plan:
         st.radio("Plan against", ["active", "worst"], key="cfp_target", horizontal=True,
@@ -785,6 +1128,32 @@ def main() -> None:
                                    "Fall that opens a deficiency": st.column_config.NumberColumn(format="%+.1f%%")},
                 )
                 st.caption("Blank: no breaking move within +/-100% for that commodity alone.")
+        if advanced:
+            with panel("ledger"):
+                section_head("Daily cash-flow ledger, active scenario (advanced model)",
+                             f"The scenario move is reached over {cf_settings.ramp_days} business days and then held. "
+                             f"Revolver funds arrive after {cf_settings.revolver_delay_days} day(s), margin line after "
+                             f"{cf_settings.margin_line_delay_days}; deficiency cure due after "
+                             f"{cf_settings.cure_grace_days} day(s) of grace.")
+                render_kpi_row(ledger_kpis(run, cf_settings.horizon_days))
+                st.plotly_chart(localize_figure(build_ledger_chart(ledger_df, terms)), width="stretch", theme=None,
+                                config=PLOTLY_CONFIG, key="chart_ledger")
+                with st.expander("Daily ledger table"):
+                    render_ledger_table(ledger_df, market.as_of_date.replace("-", ""))
+                    st.caption("Daily order: price move and margin settlement, collections, interest, borrowing base "
+                               "and cure, funding arrivals, repayments, new requests, shortfall. Collections follow "
+                               "an illustrative rule: current invoices at invoice terms, overdue ones after the "
+                               "overdue delay, ineligible or listed buyers not at all.")
+        else:
+            provenance_note("Switch Model mode to Advanced in the sidebar for the daily cash-flow ledger: funding "
+                            "delays, interest, collections and the first unfunded day.")
+
+    extras = ScenarioSpec(name="Saved extras", im_multipliers=user_mults, basis_shocks=basis_shocks,
+                          liquidation_discounts=liq_discounts, margin_line_cut_pct=ml_cut)
+    sidebar_configuration(build_config(positions, receivables, terms, settings.margin, basis_map, extras, cf_settings),
+                          market.as_of_date.replace("-", ""))
+    sidebar_reset()
+    render_author_panel()
 
     with tab_replay:
         replay_names = {"loaded": "Loaded price history (past year)",

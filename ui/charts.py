@@ -669,3 +669,174 @@ def build_crisis_replay_chart(res: CrisisReplayResult, specs: Mapping[str, Commo
     fig.update_yaxes(tickprefix="$", row=2, col=1)
     fig.update_yaxes(tickprefix="$", row=3, col=1)
     return fig
+
+
+# ---- Advanced model charts ---------------------------------------------------------------------------------
+
+def build_margin_contribution_chart(adv) -> go.Figure:
+    """Per-commodity margin cash: variation margin paid, additional initial margin (stacked), VM received."""
+    lines = adv.lines
+    names = [ln.name for ln in lines]
+    vm_paid = [max(0.0, -ln.vm_cash) / money_divisor() for ln in lines]
+    vm_recv = [-max(0.0, ln.vm_cash) / money_divisor() for ln in lines]
+    im_inc = [max(0.0, ln.im_required_1 - ln.im_required_0) / money_divisor() for ln in lines]
+    fig = go.Figure()
+    for label, vals, color in [("Variation margin paid", vm_paid, BREACH), ("Additional initial margin", im_inc, CAUTION),
+                               ("Variation margin received", vm_recv, HEALTHY)]:
+        fig.add_trace(go.Bar(y=names, x=vals, name=label, orientation="h", marker=dict(color=color, opacity=0.85),
+                             hovertemplate=f"%{{y}}<br>{label}: $%{{x:,.2f}}M<extra></extra>"))
+    fig.add_vline(x=0.0, line=dict(color=COLORS["border"], width=1))
+    apply_institutional_layout(fig, height=320, xaxis_title="USD millions (outflows right, inflows left)")
+    fig.update_layout(barmode="relative", hovermode="closest", margin=dict(l=72, t=36))
+    fig.update_xaxes(tickprefix="$", showgrid=True, gridcolor=COLORS["grid"])
+    fig.update_yaxes(autorange="reversed", showgrid=False)
+    return fig
+
+
+def build_economic_pnl_chart(adv) -> go.Figure:
+    """Per-commodity economic P&L: physical inventory, futures hedge and combined (economic, not cash)."""
+    names = [ln.name for ln in adv.lines]
+    series = [
+        ("Physical inventory", [ln.physical_pnl for ln in adv.lines], "#94A3B8"),
+        ("Futures hedge (= variation margin)", [ln.futures_pnl for ln in adv.lines], COLORS["accent_hover"]),
+        ("Combined", [ln.physical_pnl + ln.futures_pnl for ln in adv.lines], PORTFOLIO_COLOR),
+    ]
+    fig = go.Figure()
+    for label, vals, color in series:
+        fig.add_trace(go.Bar(x=names, y=[v / money_divisor() for v in vals], name=label, marker=dict(color=color),
+                             hovertemplate=f"%{{x}}<br>{label}: $%{{y:+,.2f}}M<extra></extra>"))
+    fig.add_hline(y=0.0, line=dict(color=COLORS["border"], width=1))
+    apply_institutional_layout(fig, height=320, yaxis_title="USD millions")
+    fig.update_layout(barmode="group", hovermode="closest", margin=dict(t=36))
+    fig.update_yaxes(tickprefix="$")
+    return fig
+
+
+def build_pareto_chart(res: HedgeFrontierResult) -> go.Figure:
+    """Worst-case liquidity buffer against unhedged crash loss for each hedge ratio (no weights)."""
+    x = [v / money_divisor() for v in res.crash_value_loss]
+    y = [v / money_divisor() for v in res.min_buffer]
+    labels = [f"{r:.0%}" for r in res.ratios]
+    eff = res.pareto_efficient
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[a for a, e in zip(x, eff) if not e], y=[b for b, e in zip(y, eff) if not e],
+                             mode="markers+text", name="Dominated",
+                             text=[lbl for lbl, e in zip(labels, eff) if not e], textposition="top center",
+                             textfont=dict(size=9, color=COLORS["muted"]), marker=dict(color="#CBD5E1", size=8),
+                             hovertemplate="Hedge %{text}<br>Crash loss $%{x:,.2f}M<br>Worst buffer $%{y:,.2f}M"
+                                           "<extra></extra>"))
+    fig.add_trace(go.Scatter(x=[a for a, e in zip(x, eff) if e], y=[b for b, e in zip(y, eff) if e],
+                             mode="lines+markers+text", name="Pareto-efficient",
+                             text=[lbl for lbl, e in zip(labels, eff) if e], textposition="top center",
+                             textfont=dict(size=9, color=COLORS["accent"]),
+                             line=dict(color=COLORS["accent"], width=1.5), marker=dict(color=COLORS["accent"], size=8),
+                             hovertemplate="Hedge %{text}<br>Crash loss $%{x:,.2f}M<br>Worst buffer $%{y:,.2f}M"
+                                           "<extra></extra>"))
+    fig.add_hline(y=0.0, line=dict(color=BREACH, dash="dash", width=1))
+    apply_institutional_layout(fig, height=380, yaxis_title="Worst-case net liquidity buffer, -20% to +20% (USD M)",
+                               xaxis_title="Unhedged inventory value lost in a 20% fall (USD M)")
+    fig.update_layout(hovermode="closest", margin=dict(t=36))
+    fig.update_xaxes(tickprefix="$", showgrid=True, gridcolor=COLORS["grid"])
+    fig.update_yaxes(tickprefix="$")
+    return fig
+
+
+def build_ledger_chart(df: pd.DataFrame, terms: FacilityTerms) -> go.Figure:
+    """Daily ledger: cash and liquidity; daily cash flows; facility usage. Day 0 is the opening position."""
+    d = df["day"]
+    u = money_divisor()
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.09, row_heights=[0.36, 0.36, 0.28],
+                        subplot_titles=("Cash, available liquidity and unpaid obligations (USD M)",
+                                        "Daily cash flows (USD M, + = in)",
+                                        "Revolver and margin line drawn (USD M)"))
+    fig.add_trace(go.Scatter(x=d, y=df["available_liquidity"] / u, name="Available liquidity",
+                             line=dict(color=COLORS["accent"], width=1.8), mode="lines+markers", marker=dict(size=4),
+                             hovertemplate="Day %{x}: liquidity $%{y:,.2f}M<extra></extra>"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d, y=df["cash"] / u, name="Cash", line=dict(color=PORTFOLIO_COLOR, width=1.6),
+                             hovertemplate="Day %{x}: cash $%{y:,.2f}M<extra></extra>"), row=1, col=1)
+    fig.add_trace(go.Bar(x=d, y=-df["shortfall"] / u, name="Unpaid obligation", marker=dict(color=BREACH),
+                         hovertemplate="Day %{x}: unpaid $%{y:,.2f}M<extra></extra>"), row=1, col=1)
+    fig.add_hline(y=0.0, line=dict(color=COLORS["border"], width=1), row=1, col=1)
+    flows = [
+        ("VM paid", -df["vm_paid"], BREACH), ("Initial margin posted", -df["im_posted"], CAUTION),
+        ("Cure and interest", -(df["cure_paid"] + df["interest"]), "#7C2D12"),
+        ("VM received", df["vm_received"] + df["im_released"], HEALTHY), ("Collections", df["collections"], "#4D7C0F"),
+        ("Funding arrived", df["revolver_arrival"] + df["margin_line_arrival"], COLORS["accent_hover"]),
+    ]
+    for label, vals, color in flows:
+        fig.add_trace(go.Bar(x=d, y=vals / u, name=label, marker=dict(color=color, opacity=0.85),
+                             hovertemplate=f"Day %{{x}}: {label} $%{{y:+,.2f}}M<extra></extra>"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=d, y=df["revolver_drawn"] / u, name="Revolver drawn",
+                             line=dict(color=PORTFOLIO_COLOR, width=1.6),
+                             hovertemplate="Day %{x}: revolver $%{y:,.2f}M<extra></extra>"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=d, y=df["permitted_borrowing"] / u, name="Permitted borrowing",
+                             line=dict(color=COLORS["reference"], width=1.2, dash="dash"),
+                             hovertemplate="Day %{x}: permitted $%{y:,.2f}M<extra></extra>"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=d, y=df["margin_line_drawn"] / u, name="Margin line drawn",
+                             line=dict(color=CAUTION, width=1.4),
+                             hovertemplate="Day %{x}: margin line $%{y:,.2f}M<extra></extra>"), row=3, col=1)
+    apply_institutional_layout(fig, height=720)
+    for subplot_title in fig.layout.annotations[:3]:
+        subplot_title.font = dict(color=COLORS["text_secondary"], size=12, family=FONT_SANS)
+        subplot_title.x = 0.0
+        subplot_title.xanchor = "left"
+    fig.update_layout(barmode="relative", hovermode="x unified", margin=dict(t=28, b=110),
+                      legend=dict(orientation="h", y=-0.09, yanchor="top", x=0.0, xanchor="left"))
+    fig.update_xaxes(dtick=1 if len(d) <= 21 else 5)
+    fig.update_xaxes(title=dict(text="Business day", font=dict(size=11, color=COLORS["muted"])), row=3, col=1)
+    fig.update_yaxes(tickprefix="$")
+    return fig
+
+
+def build_liquidity_fan_chart(days: Sequence[int], pct: Mapping[str, Sequence[float]], ylabel: str) -> go.Figure:
+    """Percentile fan (5-95, 25-75, median) of a USD series by day."""
+    u = money_divisor()
+    p = {k: [v / u for v in vals] for k, vals in pct.items()}
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=days, y=p["p95"], mode="lines", line=dict(width=0), hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(x=days, y=p["p5"], mode="lines", line=dict(width=0), fill="tonexty",
+                             fillcolor="rgba(27, 73, 101, 0.10)", name="5th to 95th percentile",
+                             hovertemplate="Day %{x}: 5th pct $%{y:,.2f}M<extra></extra>"))
+    fig.add_trace(go.Scatter(x=days, y=p["p75"], mode="lines", line=dict(width=0), hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(x=days, y=p["p25"], mode="lines", line=dict(width=0), fill="tonexty",
+                             fillcolor="rgba(27, 73, 101, 0.22)", name="25th to 75th percentile",
+                             hovertemplate="Day %{x}: 25th pct $%{y:,.2f}M<extra></extra>"))
+    fig.add_trace(go.Scatter(x=days, y=p["p50"], mode="lines+markers", line=dict(color=COLORS["accent"], width=2),
+                             marker=dict(size=4), name="Median", hovertemplate="Day %{x}: median $%{y:,.2f}M<extra></extra>"))
+    fig.add_hline(y=0.0, line=dict(color=BREACH, dash="dash", width=1))
+    apply_institutional_layout(fig, height=340, yaxis_title=ylabel, xaxis_title="Business day")
+    fig.update_layout(hovermode="x unified", margin=dict(t=36))
+    fig.update_yaxes(tickprefix="$")
+    return fig
+
+
+def build_probability_chart(days: Sequence[int], probs: Sequence[float], ylabel: str) -> go.Figure:
+    fig = go.Figure(go.Scatter(x=list(days), y=[v * 100 for v in probs], mode="lines+markers", line_shape="hv",
+                               line=dict(color=BREACH, width=2), marker=dict(size=4),
+                               hovertemplate="By day %{x}: %{y:.2f}%<extra></extra>"))
+    top = max([v * 100 for v in probs] + [1.0])
+    apply_institutional_layout(fig, height=340, yaxis_title=ylabel, xaxis_title="Business day")
+    fig.update_layout(showlegend=False, hovermode="x unified", margin=dict(t=12))
+    fig.update_yaxes(ticksuffix="%", range=[0, top * 1.15])
+    return fig
+
+
+def build_backtest_chart(frame: pd.DataFrame) -> go.Figure:
+    """Forecast 5-day margin outflow quantile against the realized outflow; breaches marked."""
+    u = money_divisor()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=frame["date"], y=frame["forecast_outflow"] / u, name="Forecast outflow (quantile)",
+                             line=dict(color=COLORS["accent"], width=1.6),
+                             hovertemplate="%{x|%Y-%m-%d}: forecast $%{y:,.2f}M<extra></extra>"))
+    fig.add_trace(go.Scatter(x=frame["date"], y=frame["realized_outflow"] / u, name="Realized outflow",
+                             line=dict(color="#94A3B8", width=1.1),
+                             hovertemplate="%{x|%Y-%m-%d}: realized $%{y:,.2f}M<extra></extra>"))
+    br = frame[frame["breach"]]
+    fig.add_trace(go.Scatter(x=br["date"], y=br["realized_outflow"] / u, mode="markers", name="Breach",
+                             marker=dict(color=BREACH, size=6),
+                             hovertemplate="%{x|%Y-%m-%d}: breach $%{y:,.2f}M<extra></extra>"))
+    fig.add_hline(y=0.0, line=dict(color=COLORS["border"], width=1))
+    apply_institutional_layout(fig, height=300, yaxis_title="5-day hedge margin outflow (USD M)")
+    fig.update_layout(hovermode="x unified", margin=dict(t=36))
+    fig.update_yaxes(tickprefix="$")
+    return fig
