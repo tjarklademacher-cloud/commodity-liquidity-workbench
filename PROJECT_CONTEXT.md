@@ -37,10 +37,10 @@ balance and the lender demands a deficiency cure.
 
 ## 2. Quick start and environment
 
-Local folder: `~/commodity-liquidity-workbench`.
+From the repository root:
 
 ```bash
-cd ~/commodity-liquidity-workbench
+python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python 3.11+ required
 .venv/bin/python -m streamlit run app.py          # opens on http://localhost:8501
 .venv/bin/python -m pytest                        # 154 tests, about 20 s
 .venv/bin/python -m core.data_feed --generate-sample   # regenerate data/sample_prices.csv (deterministic)
@@ -48,10 +48,8 @@ cd ~/commodity-liquidity-workbench
 
 Environment facts that matter:
 
-- macOS system Python is 3.9, which is too old (`StrEnum` needs 3.11+, Streamlit 1.5x needs 3.10+). The
-  `.venv` is **Python 3.12**, created with `uv` installed via pip: `~/Library/Python/3.9/bin/uv`.
-  Rebuild if missing:
-  `~/Library/Python/3.9/bin/uv venv --python 3.12 .venv && ~/Library/Python/3.9/bin/uv pip install --python .venv/bin/python -r requirements.txt`
+- Python 3.11 or later is required (`StrEnum` needs 3.11+, Streamlit 1.5x needs 3.10+). Development used
+  Python 3.12 in a local `.venv`; some macOS system Pythons are 3.9 and too old.
 - Installed versions at time of writing: Streamlit 1.67.0, Plotly 7.1.0, pandas 3.1.1, NumPy 2.5.5,
   Pydantic 2.14.4, yfinance 1.8.0, pytest 9.2.0.
 - Always launch with `.venv/bin/python -m streamlit ...`, not `.venv/bin/streamlit` (launcher scripts embed
@@ -60,12 +58,9 @@ Environment facts that matter:
   browser open. Port 8501 by default; use `--server.port 8502` for a second copy.
 - Streamlit does not reliably hot-reload changed modules under `ui/` or `core/` without the `watchdog`
   package. After editing those, restart the server.
-- Linting used during development: `~/Library/Python/3.9/bin/uvx pyflakes app.py ui core tests` (not a project
-  dependency).
-- Git identity is set **repo-locally** to `Tjark Lademacher <tjarklademacher@gmail.com>` (owner's choice).
-  Pushing over HTTPS uses a fine-grained GitHub token stored in the macOS keychain; it was created with an
-  expiry of **2026-12-22**. After that, `git push` will ask for credentials again (username
-  `tjarklademacher-cloud`, password = a new fine-grained token with Contents: read and write on this repo).
+- Linting used during development: `pyflakes app.py ui core tests` (run ad hoc, not a project dependency).
+- Pushing to `main` needs GitHub credentials with write access to the repository; Streamlit Community Cloud
+  redeploys automatically after each push.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ---
@@ -509,8 +504,7 @@ stress, sweep, tiers, grid, Monte Carlo samples, replay, certificate) and confir
    Carlo LaR, historical replay, Overview cockpit.
 4. **Deployment readiness:** caching layer, live-feed timeout and fallback, data-status indicator,
    methodology expander, headless config, error details limited to type, bounded requirements, README brief.
-5. **Moved out of the scratch workspace** to `~/commodity-liquidity-workbench`; `.venv` rebuilt; git initialised
-   with repo-local identity; pushed to GitHub; deployed to Streamlit Cloud (Python 3.12, `app.py`, no secrets).
+5. **Moved from a temporary workspace** to a permanent local project folder; `.venv` rebuilt; git initialised; pushed to GitHub; deployed to Streamlit Cloud (Python 3.12, `app.py`, no secrets).
 6. **Coffee and sugar added** (owner's request). Required a recalibrated facility (140M / 133M / 5.5M / 6.0M)
    so all four regimes still appear and +14% stays critical; Barry Callebaut raised to 28M so the concentration
    cap still binds. The original four-commodity book was pinned in tests as an engine regression.
@@ -544,8 +538,6 @@ stress, sweep, tiers, grid, Monte Carlo samples, replay, certificate) and confir
   checked for the Overview only; the report download click itself was not exercised in a browser (the same
   report was generated in code and inspected).
 - **Report size** is about 5 MB because plotly.js is embedded for offline use.
-- **Public commit history** contains the owner's Gmail address (owner was told; noreply rewrite was offered).
-- **GitHub token** in the keychain expires 2026-12-22.
 - **Streamlit-version-specific behaviour:** the inventory editor relies on Streamlit 1.67 keeping edits for
   keyed fixed-row editors when data values change; `requirements.txt` allows `>=1.52,<2`, and older 1.5x
   versions may reset edits.
