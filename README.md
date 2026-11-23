@@ -117,6 +117,10 @@ in the test suite as a regression check on the engines.
   bundled data with a message. Short files use reference volatilities when 30-day vol cannot be computed.
 - **Caching.** Live loads are cached for 15 minutes; the stress sweep, heatmap, replay and Monte Carlo
   runs are cached on their full inputs, so slider moves and tab switches do not recompute unchanged work.
+  The cache is shared across visitors, so a hosted copy queries Yahoo at most once per 15 minutes.
+- **Auto-refresh.** With the live feed selected, an open page reruns itself once the 15-minute cache has
+  expired and picks up the new prices. Yahoo quotes are delayed, and the model uses daily closes, so a
+  shorter interval would not add accuracy.
 - **Crisis episodes.** Fetched from Yahoo Finance on first use and cached for a day. Without internet
   the Replays tab shows a short notice and every other view keeps working.
 - **Secrets.** None are required. No credentials are read or stored.
@@ -158,4 +162,6 @@ To rebuild the bundled price file:
 1. Push this repository to GitHub.
 2. At [share.streamlit.io](https://share.streamlit.io), create an app from the repository with main
    file `app.py`, and pick Python 3.12 under Advanced settings.
-3. No secrets are needed.
+3. To open the hosted copy on live prices, add `WORKBENCH_DEFAULT_FEED = "live"` under the app's
+   Settings > Secrets. Without it the app opens on the bundled sample. No other secrets are needed.
+4. Free apps sleep after a period without visitors; the next visitor wakes them in about 30 seconds.

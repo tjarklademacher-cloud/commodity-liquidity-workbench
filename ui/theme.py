@@ -26,7 +26,7 @@ COLORS: dict[str, str] = {
     "grid": "#ECEFF4",
     "text": "#0F172A",
     "text_secondary": "#475569",
-    "muted": "#64748B",
+    "muted": "#5B6577",
     "accent": "#1B4965",
     "accent_hover": "#2C6E91",
     "accent_soft": "#DCE7EF",
@@ -200,9 +200,9 @@ def inject_custom_css() -> None:
 .kpi.primary {{ border-left-width: 3px; padding: 16px 20px; }}
 .kpi .eyebrow {{ font-size: 11px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase;
   color: {c["muted"]}; }}
-.kpi .value {{ font-size: 22px; font-weight: 500; color: {c["text"]}; margin-top: 6px; line-height: 1.15;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-.kpi.primary .value {{ font-size: 30px; }}
+.kpi .value {{ font-size: clamp(18px, 1.55vw, 22px); font-weight: 500; color: {c["text"]}; margin-top: 6px;
+  line-height: 1.15; overflow-wrap: anywhere; }}
+.kpi.primary .value {{ font-size: clamp(24px, 2.1vw, 30px); }}
 .kpi .context {{ font-size: 12px; color: {c["text_secondary"]}; margin-top: 6px; line-height: 1.45; }}
 .kpi .kpi-top {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }}
 .kpi .status {{ display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px;

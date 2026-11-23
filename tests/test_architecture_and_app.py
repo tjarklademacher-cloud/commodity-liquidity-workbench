@@ -289,3 +289,16 @@ def test_app_reporting_currency_and_funding_plan(app):
     app.radio(key="cfp_target").set_value("worst").run()
     assert len(app.exception) == 0
     assert "Lademacher Commodities" in text
+
+
+def test_sources_uses_total_matches_net_buffer_with_margin_line(market, positions, receivables, terms):
+    lined = terms.model_validate({**terms.model_dump(), "margin_line_limit": 2_000_000.0})
+    stress = run_stress_scenario(positions, receivables, market.snapshot, lined, shock_pct=0.14)
+    assert stress.margin_line_draw > 0
+    fig = build_active_shock_sources_uses_chart(stress, lined)
+    trace = fig.data[0]
+    assert "Margin<br>line draw" in trace.x
+    assert trace.textposition == "none"
+    bar_total = sum(v for v in trace.y if v is not None)
+    assert abs(bar_total - stress.net_liquidity_buffer / 1e6) < 1e-6
+    assert fig.layout.annotations[-1].text == trace.text[-1]

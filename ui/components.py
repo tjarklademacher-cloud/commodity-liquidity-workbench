@@ -220,7 +220,7 @@ def render_author_panel() -> None:
         f'</div><div>{html.escape(AUTHOR["bio"])}</div><div style="margin-top:6px;">'
         f'<a href="{AUTHOR["github"]}" target="_blank">GitHub</a> · '
         f'<a href="{AUTHOR["repo"]}" target="_blank">Source code</a></div>'
-        f'<div style="margin-top:6px;color:#64748B;">{html.escape(HOUSE_NAME)} is an illustrative book; '
+        f'<div style="margin-top:6px;color:{COLORS["muted"]};">{html.escape(HOUSE_NAME)} is an illustrative book; '
         "positions, receivables and facility terms are not real.</div></div>",
         unsafe_allow_html=True,
     )
@@ -238,8 +238,8 @@ def render_action_list(actions: Sequence[Any]) -> None:
         rows.append(
             f'<div class="audit-row" style="display:block;"><div style="display:flex;justify-content:space-between;'
             f'gap:12px;"><span><b>{i}. {html.escape(a.label)}</b> {badge}</span>'
-            f'<span class="v">{size}</span></div><div style="color:#475569;margin-top:2px;">'
-            f'{html.escape(a.detail)}{html.escape(cap)}</div><div style="color:#64748B;font-size:12px;">'
+            f'<span class="v">{size}</span></div><div style="color:{COLORS["text_secondary"]};margin-top:2px;">'
+            f'{html.escape(a.detail)}{html.escape(cap)}</div><div style="color:{COLORS["muted"]};font-size:12px;">'
             f"Trade-off: {html.escape(a.side_effect)}</div></div>"
         )
     st.markdown(f"<div>{''.join(rows)}</div>", unsafe_allow_html=True)

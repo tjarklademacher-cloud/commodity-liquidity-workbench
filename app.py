@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 
 import pandas as pd
 import streamlit as st
@@ -62,6 +64,7 @@ from ui.advanced_views import (
     save_active_as_alternative,
 )
 from ui.cache import (
+    LIVE_TTL_SECONDS,
     cached_backtest,
     cached_calibration,
     cached_cashflow_monte_carlo,
@@ -150,7 +153,8 @@ FEED_FACTOR = "Factor Sample (Synthetic)"
 PRESET_NAMES = list(STRESS_SCENARIO_PRESETS)
 
 WIDGET_DEFAULTS: dict[str, object] = {
-    "feed_mode": FEED_SAMPLE,
+    # A hosted copy sets WORKBENCH_DEFAULT_FEED=live so visitors land on live prices; tests and local runs keep the sample.
+    "feed_mode": FEED_LIVE if os.environ.get("WORKBENCH_DEFAULT_FEED", "").strip().lower() == "live" else FEED_SAMPLE,
     "winsorize": True,
     "facility_limit_m": DEFAULT_FACILITY_TERMS.facility_limit / 1e6,
     "drawn_revolver_m": DEFAULT_FACILITY_TERMS.drawn_revolver / 1e6,
@@ -270,6 +274,18 @@ def sidebar_facility_terms() -> FacilityTerms:
         return DEFAULT_FACILITY_TERMS
 
 
+@st.fragment(run_every=60)
+def _live_refresh_timer() -> None:
+    """Reruns the whole app once the live price cache has expired, so an open page picks up fresh prices.
+
+    The check runs every minute but only triggers a full rerun when the last full run is older than the cache TTL;
+    the shared cache means Yahoo is queried at most once per TTL however many visitors are connected.
+    """
+    last = st.session_state.get("_live_full_run_at")
+    if last is not None and time.monotonic() - last >= LIVE_TTL_SECONDS:
+        st.rerun(scope="app")
+
+
 def sidebar_market_feed() -> MarketLoadResult:
     side_section("Market data")
     mode = st.sidebar.radio("Price source", [FEED_SAMPLE, FEED_FACTOR, FEED_LIVE, FEED_UPLOAD], key="feed_mode",
@@ -280,6 +296,10 @@ def sidebar_market_feed() -> MarketLoadResult:
     if mode == FEED_LIVE:
         with st.spinner("Loading front-month futures from Yahoo Finance"):
             market = cached_live_market("1y", winsorize)
+        st.session_state["_live_full_run_at"] = time.monotonic()
+        _live_refresh_timer()
+        st.sidebar.caption(f"Live prices refresh every {LIVE_TTL_SECONDS // 60} minutes while this page is open. "
+                           "Yahoo quotes are delayed.")
     elif mode == FEED_UPLOAD:
         uploaded = st.sidebar.file_uploader("Price CSV (Date, GC=F, HG=F, LBR=F, CC=F, KC=F, SB=F)", type=["csv"])
         template = pd.read_csv(DEFAULT_SAMPLE_CSV_PATH).tail(60).to_csv(index=False)

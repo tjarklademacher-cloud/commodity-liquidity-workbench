@@ -71,6 +71,23 @@ def _note(fig: go.Figure, x: float, text: str, color: str, top: bool, align: str
     fig.add_annotation(**kwargs)
 
 
+def _waterfall_value_labels(fig: go.Figure, x: Sequence[str], starts: Sequence[float], ends: Sequence[float],
+                            texts: Sequence[str]) -> None:
+    """Value labels for a waterfall as masked annotations, so reference lines and connectors never cut digits.
+
+    Labels sit beyond the end of each bar in its direction of travel; the trace keeps its text for hover.
+    """
+    for xv, start, end, text in zip(x, starts, ends, texts):
+        if not text:
+            continue
+        up = end >= start
+        fig.add_annotation(x=xv, y=end, xref="x", yref="y", text=text, showarrow=False, xanchor="center",
+                           yanchor="bottom" if up else "top", yshift=3 if up else -3,
+                           font=dict(size=11, color=COLORS["text"], family=FONT_SANS),
+                           bgcolor="rgba(255, 255, 255, 0.92)", borderpad=1)
+    fig.update_traces(selector=dict(type="waterfall"), textposition="none")
+
+
 def build_borrowing_base_waterfall(bb_result: BorrowingBaseResult) -> go.Figure:
     """Gross collateral to final borrowing base bridge, with facility limit and drawn balance."""
     wf = bb_result.waterfall
@@ -99,6 +116,9 @@ def build_borrowing_base_waterfall(bb_result: BorrowingBaseResult) -> go.Figure:
     fig.add_annotation(x=0, xref="paper", y=_m(bb_result.drawn_revolver), yref="y", xanchor="left", yanchor="top",
                        showarrow=False, text=f"Drawn {_mtext(bb_result.drawn_revolver)}",
                        font=dict(size=11, color=COLORS["text"]), bgcolor="rgba(255, 255, 255, 0.85)")
+    starts = [0.0 if w.measure == "total" else _m(w.running_total - w.amount) for w in wf]
+    _waterfall_value_labels(fig, [_wrap_label(bridge_label(w.label)) for w in wf], starts,
+                            [_m(w.running_total) for w in wf], [_mtext(w.amount) for w in wf])
     peak = max(w.running_total for w in wf) if wf else 0.0
     apply_institutional_layout(fig, height=400, yaxis_title="USD millions")
     fig.update_layout(showlegend=False, hovermode="closest", margin=dict(t=24, b=56))
@@ -328,6 +348,7 @@ def build_active_shock_sources_uses_chart(stress_result: StressScenarioResult, t
         ("Unrestricted cash", terms.unrestricted_cash),
         ("Shocked headroom", stress_result.shocked_headroom),
         ("Futures VM inflow", stress_result.vm_inflow),
+        *([("Margin line draw", stress_result.margin_line_draw)] if stress_result.margin_line_draw > 0 else []),
         ("Futures VM call", -stress_result.vm_outflow),
         ("IM step-up call", -stress_result.im_addon_outflow),
         ("BB deficiency cure", -stress_result.bb_deficiency_cure),
@@ -354,10 +375,20 @@ def build_active_shock_sources_uses_chart(stress_result: StressScenarioResult, t
         )
     )
     fig.add_hline(y=0.0, line=dict(color=COLORS["border"], width=1))
+    running, starts, ends = 0.0, [], []
+    for a in amounts[:-1]:
+        starts.append(_m(running))
+        running += a
+        ends.append(_m(running))
+    starts.append(0.0)
+    ends.append(_m(stress_result.net_liquidity_buffer))
+    _waterfall_value_labels(fig, labels, starts, ends, list(fig.data[0].text))
+    lo, hi = min(starts + ends + [0.0]), max(starts + ends + [0.0])
+    pad = max(hi - lo, 1e-6) * 0.14
     apply_institutional_layout(fig, height=360, yaxis_title="USD millions")
     fig.update_layout(showlegend=False, hovermode="closest", margin=dict(t=24, b=56))
     fig.update_xaxes(tickangle=0, tickfont=dict(size=11, color=COLORS["text_secondary"]))
-    fig.update_yaxes(tickprefix="$")
+    fig.update_yaxes(tickprefix="$", range=[lo - pad, hi + pad])
     return fig
 
 
