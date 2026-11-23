@@ -122,6 +122,7 @@ from ui.components import (
     render_author_panel,
     render_briefing,
     render_header,
+    render_intro,
     render_kpi_row,
     render_verdict,
     section_head,
@@ -153,7 +154,8 @@ FEED_FACTOR = "Factor Sample (Synthetic)"
 PRESET_NAMES = list(STRESS_SCENARIO_PRESETS)
 
 WIDGET_DEFAULTS: dict[str, object] = {
-    # A hosted copy sets WORKBENCH_DEFAULT_FEED=live so visitors land on live prices; tests and local runs keep the sample.
+    # A hosted copy sets WORKBENCH_DEFAULT_FEED=live so visitors land on live prices;
+    # tests and local runs keep the sample.
     "feed_mode": FEED_LIVE if os.environ.get("WORKBENCH_DEFAULT_FEED", "").strip().lower() == "live" else FEED_SAMPLE,
     "winsorize": True,
     "facility_limit_m": DEFAULT_FACILITY_TERMS.facility_limit / 1e6,
@@ -567,6 +569,7 @@ def main() -> None:
             ],
             market_data_status(market),
         )
+        render_intro()
         baseline_text = (f"No-shock baseline {fmt_signed_millions(comparison[0].metrics['net_liquidity_buffer'])}."
                          if comparison else "")
         if advanced:

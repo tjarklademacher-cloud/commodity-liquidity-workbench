@@ -1,9 +1,10 @@
 # Commodity Collateral, Borrowing Base & Liquidity Stress Workbench
 
-> **Live app:** https://commodity-liquidity-workbench.streamlit.app
->
-> **Screenshot:** save a capture of the Overview tab as `docs/dashboard.png`, then replace this line with
-> `![Workbench overview](docs/dashboard.png)`
+> **Live app:** [commodity-liquidity-workbench.streamlit.app](https://commodity-liquidity-workbench.streamlit.app)
+> (live Yahoo Finance prices, refreshed every 15 minutes; the first visit after a quiet spell takes about
+> 30 seconds to wake the app)
+
+![Workbench overview: net liquidity buffer verdict, supporting metrics and the parallel shock sweep](docs/dashboard.png)
 
 A Streamlit desk tool for the treasury, trading and risk team of a physical commodity merchant financed
 by an asset-based revolving facility. The modelled book belongs to Lademacher Commodities, an illustrative

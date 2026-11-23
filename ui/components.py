@@ -135,6 +135,34 @@ def provenance_note(text: str) -> None:
     st.markdown(f'<div class="provenance">{html.escape(text)}</div>', unsafe_allow_html=True)
 
 
+def _dismiss_intro() -> None:
+    st.session_state["intro_dismissed"] = True
+
+
+def render_intro() -> None:
+    """First-visit guide: what the page answers and three things to try. Hidden for the session once dismissed."""
+    if st.session_state.get("intro_dismissed"):
+        return
+    with st.container(key="panel_intro"):
+        col_text, col_btn = st.columns([5, 1], gap="medium", vertical_alignment="top")
+        with col_text:
+            section_head(
+                "Start here",
+                "Can a fully hedged commodity merchant still run out of cash? This page answers that for an "
+                "illustrative book of metals, lumber and softs financed by an asset-based loan.",
+            )
+            st.markdown(
+                "1. Read the **net liquidity buffer** below: the cash left after margin calls and any borrowing "
+                "base paydown at the active price shock.\n"
+                "2. Move **Parallel price shock** in the sidebar (on a phone, open it with the double arrow at "
+                "the top left) and watch the verdict change.\n"
+                "3. Open **Stress sweep** to see the price moves where the book runs short, or **Funding plan** "
+                "for the actions that close the gap."
+            )
+        with col_btn:
+            st.button("Got it", key="intro_dismiss_btn", on_click=_dismiss_intro, width="stretch")
+
+
 def methodology_expander() -> None:
     """Collapsed commercial brief explaining the problem and what each module measures."""
     with st.expander("Methodology and use case", expanded=False):

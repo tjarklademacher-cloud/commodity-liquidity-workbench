@@ -183,3 +183,12 @@ def test_config_restore_rejects_unsupported_cap_tier(monkeypatch):
     data["terms"]["concentration_cap_pct"] = 0.33
     ss = _run_callback(monkeypatch, json.dumps(data).encode())
     assert "not one of the supported tiers" in ss["config_error"] and "model_mode" not in ss
+
+
+def test_intro_card_shows_once_and_dismisses(app):
+    assert "Start here" in _text(app)
+    app.button(key="intro_dismiss_btn").click().run()
+    assert not app.exception
+    assert app.session_state["intro_dismissed"] is True
+    assert "Start here" not in _text(app)
+    assert "-$1.79M" in _text(app)

@@ -585,14 +585,14 @@ stress, sweep, tiers, grid, Monte Carlo samples, replay, certificate) and confir
 ## 13. Remaining tasks and backlog
 
 Open items:
-1. README screenshot placeholder: save an Overview capture as `docs/dashboard.png` and replace the
-   placeholder line with `![Workbench overview](docs/dashboard.png)`.
-2. Visual check of CHF and GBP modes, the Hedging / Funding plan / Replays tabs at 390 px and 1280 px, and a
-   real click of the report download.
+1. Done 2026-11-23: README screenshot (`docs/dashboard.png`) and live link.
+2. Visual check of CHF and GBP modes at 1280 px and a real click of the report download. (All ten tabs were
+   checked at 375 px on 2026-11-23 with no horizontal overflow.)
 3. Consider raising the Streamlit floor in `requirements.txt` to the tested version (1.67) to lock in the
    editor behaviour, or test on 1.52.
 
-4. Review and merge `feature/advanced-liquidity-model` (section 14), then redeploy from `main`.
+4. Done 2026-11-23: `feature/advanced-liquidity-model` fast-forwarded into `main` and live at
+   https://commodity-liquidity-workbench.streamlit.app (secret `WORKBENCH_DEFAULT_FEED = "live"`).
 5. Advanced follow-ups: run the sweep, heatmap and hedge frontier through the advanced engine; volatility-
    dependent IM; replace illustrative IM defaults with dated exchange notices entered as user assumptions.
 
