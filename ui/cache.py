@@ -19,6 +19,12 @@ from core.data_feed import (
     load_live_market_data,
     load_sample_market_data,
 )
+from core.advanced_analytics import (
+    run_advanced_hedge_frontier,
+    run_advanced_shock_grid,
+    run_advanced_sweep,
+)
+from core.advanced_schemas import AdvancedSettings, ScenarioSpec
 from core.crisis_replay import CRISIS_EPISODES, fetch_episode_closes, run_crisis_replay
 from core.hedge_optimizer import run_hedge_frontier
 from core.scenario_analytics import (
@@ -136,6 +142,33 @@ def cached_hedge_frontier(
 ) -> HedgeFrontierResult:
     positions, receivables, terms, snapshot = _load_inputs(positions_json, receivables_json, terms_json, snapshot_json)
     return run_hedge_frontier(positions, receivables, snapshot, terms, scope)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_advanced_suite(
+    positions_json: str, receivables_json: str, terms_json: str, snapshot_json: str,
+    settings_json: str, base_spec_json: str, multipliers_json: str, trigger_rule: bool,
+) -> tuple[StressSweepResult, ShockGridResult]:
+    """41-point sweep and metals x softs grid through the advanced engine (advanced model mode only)."""
+    positions, receivables, terms, snapshot = _load_inputs(positions_json, receivables_json, terms_json, snapshot_json)
+    settings = AdvancedSettings.model_validate_json(settings_json)
+    base = ScenarioSpec.model_validate_json(base_spec_json)
+    mults = json.loads(multipliers_json)
+    sweep = run_advanced_sweep(positions, receivables, snapshot, terms, settings, base, mults, trigger_rule)
+    grid = run_advanced_shock_grid(positions, receivables, snapshot, terms, settings, base, mults, trigger_rule)
+    return sweep, grid
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_advanced_frontier(
+    positions_json: str, receivables_json: str, terms_json: str, snapshot_json: str,
+    settings_json: str, base_spec_json: str, multipliers_json: str, trigger_rule: bool, scope: str,
+) -> HedgeFrontierResult:
+    positions, receivables, terms, snapshot = _load_inputs(positions_json, receivables_json, terms_json, snapshot_json)
+    return run_advanced_hedge_frontier(
+        positions, receivables, snapshot, terms, AdvancedSettings.model_validate_json(settings_json),
+        ScenarioSpec.model_validate_json(base_spec_json), json.loads(multipliers_json), trigger_rule, scope,
+    )
 
 
 @st.cache_data(show_spinner=False, max_entries=32)

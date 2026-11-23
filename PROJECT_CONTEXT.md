@@ -560,8 +560,8 @@ stress, sweep, tiers, grid, Monte Carlo samples, replay, certificate) and confir
 - **Bundled data is synthetic**, with independent draws per commodity, so correlations are near zero and
   Monte Carlo tails on the sample are mild (for example P(critical squeeze) 0% at 5 days). Live data gives
   realistic co-movement.
-- **Advanced model limits:** see section 14.5. The 41-point sweep, heatmap, legacy Monte Carlo, runway, hedge
-  frontier, replays and funding plan always use the legacy engine, in both modes.
+- **Advanced model limits:** see section 14.5. In advanced mode the sweep, heatmap and hedge frontier
+  use the advanced engine; legacy Monte Carlo, runway, replays and funding plan always use the legacy engine.
 - **Model simplifications (legacy mode):** quantities, receivables and drawn balance held fixed; price shocks do not change
   volatility (except in crisis replays, which use observed vol); IM step-up is a single fraction of baseline
   IM triggered by the largest move, not an exchange per-contract or SPAN-style model; no basis risk (futures
@@ -593,8 +593,8 @@ Open items:
 
 4. Done 2026-11-23: `feature/advanced-liquidity-model` fast-forwarded into `main` and live at
    https://commodity-liquidity-workbench.streamlit.app (secret `WORKBENCH_DEFAULT_FEED = "live"`).
-5. Advanced follow-ups: run the sweep, heatmap and hedge frontier through the advanced engine; volatility-
-   dependent IM; replace illustrative IM defaults with dated exchange notices entered as user assumptions.
+5. Advanced follow-ups (sweep, heatmap and hedge frontier done 2026-11-23): funding plan and runway through
+   the advanced engine; volatility-dependent IM; replace illustrative IM defaults with dated exchange notices entered as user assumptions.
 
 Ideas offered but not yet chosen by the owner (good next candidates):
 - Other ideas raised earlier: funding cost and carry, receivable dilution reserves (left out because it changes
@@ -670,8 +670,11 @@ LaR sampling intervals use order statistics.
 - Sensitivities at +14%: IM x1.5 -6.06M; hedge 10 points lower +1.78M; margin line +10M +10.00M; cash +5M
   +5.00M; basis -5% and AR advance -10 points 0.00 (borrowing base above the facility limit, so collateral
   changes do not move availability).
-- Limits: sweep, heatmap, legacy Monte Carlo, runway, hedge frontier, replays and funding plan remain legacy
-  engine; IM does not depend on simulated volatility; no intraday calls, cross-margining, fees or taxes;
+- Advanced sweep, grid and frontier (`core/advanced_analytics.py`, added 2026-11-23): squeeze breakeven +11.21%
+  (legacy +12.09%), deficiency breakeven -12.72%, sweep 13/11/8/9, grid 9.3% squeeze (27 of 289), worst -8.22M
+  at metals and softs +20%; frontier optimum 50% (current 85%), worst-case buffer +0.30M. Neutral settings
+  reproduce the legacy sweep, grid and frontier exactly (`tests/test_advanced_analytics.py`).
+- Limits: legacy Monte Carlo, runway, replays and funding plan remain legacy engine; IM does not depend on simulated volatility; no intraday calls, cross-margining, fees or taxes;
   collections rule and all basis values are assumptions.
 
 ### 14.6 Saved configurations (`core/scenario_comparison.py`)

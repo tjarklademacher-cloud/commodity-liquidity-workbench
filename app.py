@@ -73,6 +73,8 @@ from ui.cache import (
     cached_fx_rate,
     cached_crisis_replay,
     cached_custom_market,
+    cached_advanced_frontier,
+    cached_advanced_suite,
     cached_hedge_frontier,
     cached_live_market,
     cached_monte_carlo,
@@ -507,6 +509,17 @@ def main() -> None:
         instant_spec = active_spec.model_copy(update={"im_multipliers": auto_im_multipliers(
             active_spec.futures_shocks, terms, user_mults, trigger_rule)})
     calibration = cached_calibration(market.prices_df, ss["calib_window"], bool(ss["winsorize"]))
+    sweep_base = ScenarioSpec(name="Sweep", basis_shocks=basis_shocks, liquidation_discounts=liq_discounts,
+                              margin_line_cut_pct=ml_cut)
+    adv_args = (settings.model_dump_json(), sweep_base.model_dump_json(), json.dumps(user_mults, sort_keys=True),
+                trigger_rule)
+    # Sweep, grid and frontier follow the model mode; the funding plan, runway and Monte Carlo stay legacy.
+    if advanced:
+        with st.spinner("Running the advanced sweep"):
+            view_sweep, view_grid = cached_advanced_suite(*inputs, *adv_args)
+    else:
+        view_sweep, view_grid = sweep, grid
+    engine_note = " Advanced engine." if advanced else ""
     adv = adv_recon = run = ledger_df = cfmc = None
     if advanced:
         with st.spinner("Running the advanced model"):
@@ -538,7 +551,7 @@ def main() -> None:
             f"{COMMODITY_SPECS[t].name} {v:+.0%}" for t, v in per_commodity.items()
         )
         same_metals = per_commodity["GC=F"] == per_commodity["HG=F"]
-        same_softs = per_commodity["LBR=F"] == per_commodity["CC=F"]
+        same_softs = len({per_commodity[t] for t in ("LBR=F", "CC=F", "KC=F", "SB=F")}) == 1
         active_point = (per_commodity["GC=F"], per_commodity["LBR=F"]) if same_metals and same_softs else None
     else:
         scenario = f"Parallel {parallel_shock:+.0%}"
@@ -553,11 +566,11 @@ def main() -> None:
     plan = build_contingency_plan(positions, receivables, market.snapshot, terms, sweep, plan_shocks, plan_label)
     availability = min(terms.facility_limit, bb.final_borrowing_base)
     usage = terms.drawn_revolver / availability if availability > 0 else float("inf")
-    be_up = sweep.upside_squeeze_breakeven_pct
-    be_down = sweep.downside_deficiency_breakeven_pct
+    be_up = view_sweep.upside_squeeze_breakeven_pct
+    be_down = view_sweep.downside_deficiency_breakeven_pct
     status = regime_status(active_regime)
-    worst_spec = ScenarioSpec(name=f"Worst parallel shock ({sweep.worst_net_buffer_point.shock_pct:+.0%})",
-                              futures_shocks=dict(sweep.worst_net_buffer_point.shocks_map))
+    worst_spec = ScenarioSpec(name=f"Worst parallel shock ({view_sweep.worst_net_buffer_point.shock_pct:+.0%})",
+                              futures_shocks=dict(view_sweep.worst_net_buffer_point.shocks_map))
     alt_spec = ScenarioSpec.model_validate_json(ss["compare_alt"]) if "compare_alt" in ss else worst_spec
     comparison = compare_scenarios(
         positions, receivables, market.snapshot, terms, settings, model_mode,
@@ -643,7 +656,7 @@ def main() -> None:
 
     with tab_overview:
         explanation_now = regime_explanation_text(stress)
-        report_args = (currency, market, terms, bb, stress, sweep, mc, runway, plan, scenario, explanation_now)
+        report_args = (currency, market, terms, bb, stress, view_sweep, mc, runway, plan, scenario, explanation_now)
         report_kwargs = {
             "comparison": comparison, "model_label": MODEL_LABELS[model_mode],
             "advanced": ({"adv": adv, "recon": adv_recon, "sens": sensitivities, "run": run, "ledger_df": ledger_df,
@@ -664,10 +677,10 @@ def main() -> None:
             )
         col_main, col_side = st.columns([2.1, 1], gap="medium")
         with col_main:
-            chart(build_buffer_profile_chart(sweep, None if is_custom else parallel_shock), "chart_profile",
+            chart(build_buffer_profile_chart(view_sweep, None if is_custom else parallel_shock), "chart_profile",
                   "Net liquidity buffer across parallel price shocks",
                   "Same percentage shock to every commodity. Shading: green healthy, amber margin trap or BB "
-                  "deficiency, red critical squeeze.")
+                  "deficiency, red critical squeeze." + engine_note)
         with col_side:
             with panel("briefing"):
                 section_head("Treasury briefing", "Derived from the current inputs.")
@@ -678,7 +691,7 @@ def main() -> None:
                                  + "</b>, deficiency breakeven <b>"
                                  + (fmt_pct(be_down) if be_down is not None else "none to -20%") + "</b>."))
                 cap_point = next(
-                    (p for p in sweep.points if p.shock_pct > 0 and p.shocked_bb >= terms.facility_limit), None
+                    (p for p in view_sweep.points if p.shock_pct > 0 and p.shocked_bb >= terms.facility_limit), None
                 )
                 if cap_point is not None:
                     findings.append(("neutral", f"Headroom <b>caps out at {cap_point.shock_pct:+.0%}</b>. Above it "
@@ -689,10 +702,11 @@ def main() -> None:
                     findings.append(("neutral", f"<b>{len(bb.capped_buyer_names)} buyer(s) capped</b>, "
                                                 f"{fmt_millions(bb.concentration_cutback_dollars)} cut back. The "
                                                 f"{tiers[-1].cap_pct:.1%} tier would add {fmt_millions(tier_gain)}."))
-                findings.append(("breach" if grid.squeeze_share > 0 else "neutral",
-                                 f"<b>{fmt_pct(grid.squeeze_share, 0)}</b> of mixed metals/softs grid scenarios "
-                                 f"end in a critical squeeze. Worst: metals {grid.worst_metals_shock:+.0%}, softs "
-                                 f"{grid.worst_softs_shock:+.0%} ({fmt_signed_millions(grid.worst_net_buffer)})."))
+                findings.append(("breach" if view_grid.squeeze_share > 0 else "neutral",
+                                 f"<b>{fmt_pct(view_grid.squeeze_share, 0)}</b> of mixed metals/softs grid scenarios "
+                                 f"end in a critical squeeze. Worst: metals {view_grid.worst_metals_shock:+.0%}, "
+                                 f"softs {view_grid.worst_softs_shock:+.0%} "
+                                 f"({fmt_signed_millions(view_grid.worst_net_buffer)})."))
                 fix = next((a for a in plan.actions if a.feasible), None)
                 if plan.shortfall > 0 and fix is not None:
                     findings.append(("caution", f"Smallest single fix for {plan.target_label.lower()}: "
@@ -794,17 +808,18 @@ def main() -> None:
                 solver_audit_rows(bb)
 
     with tab_stress:
-        chart(build_stress_sweep_chart(sweep, parallel_shock, is_custom), "chart_sweep",
+        chart(build_stress_sweep_chart(view_sweep, parallel_shock, is_custom), "chart_sweep",
               "Margin-trap stress sweep",
               f"41 parallel shocks from -20% to +20%. Squeeze breakeven "
               f"{fmt_pct(be_up) if be_up is not None else 'none in range'}, deficiency breakeven "
               f"{fmt_pct(be_down) if be_down is not None else 'none in range'}. Regime counts: "
-              + ", ".join(f"{regime_label(k)} {v}" for k, v in sweep.regime_counts.items()) + ".")
+              + ", ".join(f"{regime_label(k)} {v}" for k, v in view_sweep.regime_counts.items()) + "."
+              + engine_note)
         if advanced:
             with panel("margin_dashboard"):
                 section_head("Margin dashboard, active scenario (advanced model)",
                              f"{scenario}. Whole contracts, per-contract initial margin, basis and margin line "
-                             "applied. The 41-point sweep above uses the legacy engine.")
+                             "applied, as in the 41-point sweep above.")
                 render_kpi_row(margin_kpis(adv))
             col_main, col_side = st.columns([2.1, 1], gap="medium")
             with col_main:
@@ -862,7 +877,7 @@ def main() -> None:
                         ]
                     )
         with st.expander("Full 41-point sweep table"):
-            sweep_df = sweep.to_dataframe()
+            sweep_df = view_sweep.to_dataframe()
             view = pd.DataFrame({
                 "Shock": sweep_df["shock_pct"] * 100,
                 "Borrowing base": sweep_df["shocked_bb"] / money_divisor(),
@@ -882,33 +897,34 @@ def main() -> None:
             )
             st.download_button(
                 "Download sweep (CSV, full precision)", data=sweep_df.to_csv(index=False),
-                file_name=f"stress_sweep_{market.as_of_date.replace('-', '')}.csv",
+                file_name=f"stress_sweep_{'advanced_' if advanced else ''}{market.as_of_date.replace('-', '')}.csv",
                 mime="text/csv", key="dl_sweep",
             )
         stress_methodology_expander()
 
     with tab_heat:
-        active_nlb = None
-        if active_point is not None and active_point[0] in grid.metals_axis and active_point[1] in grid.softs_axis:
-            i, j = grid.metals_axis.index(active_point[0]), grid.softs_axis.index(active_point[1])
-            active_nlb = grid.net_buffer[i][j]
-        squeeze_count = sum(1 for row in grid.regime for r in row if r == "CRITICAL_SQUEEZE")
+        cell_nlb = None
+        if (active_point is not None and active_point[0] in view_grid.metals_axis
+                and active_point[1] in view_grid.softs_axis):
+            i, j = view_grid.metals_axis.index(active_point[0]), view_grid.softs_axis.index(active_point[1])
+            cell_nlb = view_grid.net_buffer[i][j]
+        squeeze_count = sum(1 for row in view_grid.regime for r in row if r == "CRITICAL_SQUEEZE")
         render_kpi_row(
             [
-                {"label": "Grid scenarios in critical squeeze", "value": fmt_pct(grid.squeeze_share, 1),
-                 "context": f"{squeeze_count} of {len(grid.metals_axis) ** 2} combinations"},
-                {"label": "Worst grid scenario", "value": fmt_signed_millions(grid.worst_net_buffer),
-                 "context": f"Metals {grid.worst_metals_shock:+.1%}, softs {grid.worst_softs_shock:+.1%}"},
-                {"label": "Active scenario", "value": fmt_signed_millions(stress.net_liquidity_buffer),
-                 "status": status, "status_text": regime_label(stress.regime),
-                 "context": "On the grid (circled)" if active_nlb is not None
+                {"label": "Grid scenarios in critical squeeze", "value": fmt_pct(view_grid.squeeze_share, 1),
+                 "context": f"{squeeze_count} of {len(view_grid.metals_axis) ** 2} combinations"},
+                {"label": "Worst grid scenario", "value": fmt_signed_millions(view_grid.worst_net_buffer),
+                 "context": f"Metals {view_grid.worst_metals_shock:+.1%}, softs {view_grid.worst_softs_shock:+.1%}"},
+                {"label": "Active scenario", "value": fmt_signed_millions(active_nlb),
+                 "status": status, "status_text": regime_label(active_regime),
+                 "context": "On the grid (circled)" if cell_nlb is not None
                             else "Between grid points; exact engine value"},
             ]
         )
-        chart(build_shock_heatmap(grid, active_point), "chart_heatmap",
+        chart(build_shock_heatmap(view_grid, active_point), "chart_heatmap",
               "Net liquidity buffer by mixed shock",
-              "Gold and copper move together (vertical), lumber and cocoa together (horizontal), 2.5% steps. "
-              "Dashed line: buffer of $0. Darker cells are worse.")
+              "Gold and copper move together (vertical); lumber, cocoa, coffee and sugar together (horizontal), "
+              "2.5% steps. Dashed line: buffer of $0. Darker cells are worse." + engine_note)
 
     with tab_mc:
         render_kpi_row(
@@ -1045,9 +1061,12 @@ def main() -> None:
             provenance_note("Sweeps the futures hedge from 0% to 100% of physical quantity"
                             + (" for every commodity at once." if scope == ALL_COMMODITIES
                                else f" for {scope_names[scope].lower()}; other commodities keep today's hedges.")
-                            + " Each ratio is run through the same 41 parallel shocks as the stress sweep.")
-        frontier = cached_hedge_frontier(*inputs, scope)
-        nlbs = [p.net_liquidity_buffer for p in sweep.points]
+                            + " Each ratio is run through the same 41 parallel shocks as the stress sweep."
+                            + (" Advanced engine: whole contracts, so each ratio rounds to a contract count."
+                               if advanced else ""))
+        frontier = (cached_advanced_frontier(*inputs, *adv_args, scope) if advanced
+                    else cached_hedge_frontier(*inputs, scope))
+        nlbs = [p.net_liquidity_buffer for p in view_sweep.points]
         cur_share = sum(v >= 0 for v in nlbs) / len(nlbs)
         best = frontier.recommended_index
         render_kpi_row(

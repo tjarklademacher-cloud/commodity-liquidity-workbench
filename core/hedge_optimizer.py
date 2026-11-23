@@ -7,7 +7,7 @@ engine that reproduces `run_stress_scenario` exactly.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -59,6 +59,7 @@ def run_hedge_frontier(
     shock_max: float = 0.20,
     shock_steps: int = 41,
     basis_shock_pct: float = 0.05,
+    evaluate: Callable[[list[InventoryPosition], np.ndarray], Mapping[str, np.ndarray]] | None = None,
 ) -> HedgeFrontierResult:
     """Sweep the hedge ratio of `scope` (a ticker, or ALL) from 0% to 100% of physical quantity.
 
@@ -69,6 +70,9 @@ def run_hedge_frontier(
       basis_exposure   = hedged notional x basis_shock_pct (P&L hit if the basis moved that far against
                          the hedged inventory; illustrative size)
       pareto_efficient = no other ratio has both a higher worst-case buffer and a lower unhedged crash loss
+
+    `evaluate(trial_positions, shock_matrix)` returns arrays keyed net_liquidity_buffer, vm_outflow and
+    im_addon_outflow (and optionally a scalar baseline_bb); the default is the legacy vectorized engine.
     """
     if scope != ALL_COMMODITIES and scope not in {p.ticker for p in positions}:
         raise ValueError(f"No position for {scope}")
@@ -82,7 +86,8 @@ def run_hedge_frontier(
     margin_need, basis_exp = [], []
     for ratio in ratios:
         trial = _with_ratio(positions, scope, float(ratio))
-        res = evaluate_shock_matrix(trial, receivables, market_snapshot, terms, matrix, specs)
+        res = (evaluate(trial, matrix) if evaluate is not None
+               else evaluate_shock_matrix(trial, receivables, market_snapshot, terms, matrix, specs))
         nlb = res["net_liquidity_buffer"]
         margin_need.append(float(res["vm_outflow"][i_up] + res["im_addon_outflow"][i_up]))
         basis_exp.append(float(sum(p.hedged_qty * market_snapshot[p.ticker].spot_price for p in trial
@@ -95,8 +100,11 @@ def run_hedge_frontier(
             max(0.0, (p.physical_qty - p.hedged_qty)) * market_snapshot[p.ticker].spot_price * -CRASH_SHOCK
             for p in trial if scope == ALL_COMMODITIES or p.ticker == scope
         )))
-        items = compute_portfolio_inventory(trial, market_snapshot, specs)
-        base_bb.append(calculate_borrowing_base(items, receivables, terms).final_borrowing_base)
+        if "baseline_bb" in res:
+            base_bb.append(float(res["baseline_bb"]))
+        else:
+            items = compute_portfolio_inventory(trial, market_snapshot, specs)
+            base_bb.append(calculate_borrowing_base(items, receivables, terms).final_borrowing_base)
 
     order = sorted(range(len(ratios)), key=lambda i: (positive_share[i], min_buffer[i], ratios[i]), reverse=True)
     best = order[0]

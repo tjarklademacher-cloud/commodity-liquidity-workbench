@@ -173,7 +173,12 @@ def run_stress_sweep(
         )
         for s in grid
     ]
+    return summarize_sweep(points, terms)
 
+
+def summarize_sweep(points: Sequence[StressScenarioResult], terms: FacilityTerms) -> StressSweepResult:
+    """Breakevens, regime counts and worst point for an ordered parallel sweep (shared by both engines)."""
+    points = list(points)
     upside: float | None = None
     for p1, p2 in zip(points[:-1], points[1:]):
         if p1.shock_pct >= 0.0 and p1.net_liquidity_buffer >= 0.0 and p2.net_liquidity_buffer < 0.0:

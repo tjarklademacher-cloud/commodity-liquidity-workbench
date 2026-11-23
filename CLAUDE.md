@@ -34,6 +34,7 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 | `core/advanced_scenario.py` | Advanced scenario, legacy reconciliation, margin presets, trigger rule, sensitivities |
 | `core/cashflow_engine.py` | Daily cash-flow ledger and cash-flow Monte Carlo |
 | `core/market_calibration.py` | Calibration windows, PSD repair, simulation methods, factor sample, backtest |
+| `core/advanced_analytics.py` | Sweep, metals x softs grid and hedge frontier through the advanced engine (legacy result types) |
 | `core/scenario_comparison.py` | Scenario comparison and versioned JSON configurations (load_config validates) |
 | `ui/advanced_views.py` | Advanced widgets, margin/basis editors, dashboards, comparison, config callbacks |
 | `ui/report.py` | Self-contained HTML credit committee report (built on download click) |
@@ -55,7 +56,8 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 - Default six-commodity book (`tests/test_default_book.py`): BB $144.94M (Barry capped, $2.06M cutback),
   +14% NLB -$1.79M critical, -20% cure $6.83M, breakevens +12.09% / -12.72%, sweep 13/12/8/8.
 - Advanced model (default settings, +14%, trigger rule on): buffer -$2.61M, reconciliation step "Per-contract
-  initial margin model" -0.82M, ledger first unfunded day 3. Neutral advanced settings must equal legacy.
+  initial margin model" -0.82M, ledger first unfunded day 3. Advanced sweep breakevens +11.21% / -12.72%,
+  sweep 13/11/8/9. Neutral advanced settings must equal legacy (scenario, sweep, grid and hedge frontier).
 - Legacy four-commodity book pinned in `tests/conftest.py` (`positions`, `receivables`, `terms`, `sweep`):
   BB $114.12M, +14% NLB -$1.22M, breakevens +12.41% / -5.45%, sweep 15/7/11/8. Do not change these.
 - Coffee (KC=F) and sugar (SB=F) are quoted in cents; `CommoditySpec.quote_scale=0.01` converts on load.

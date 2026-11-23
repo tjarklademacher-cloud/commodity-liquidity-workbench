@@ -221,3 +221,16 @@ def test_damaged_shared_link_changes_nothing():
     assert not at.exception
     assert at.session_state["parallel_shock"] == 14
     assert at.session_state["config_error"].startswith("Shared link not applied")
+
+
+def test_sweep_heatmap_and_briefing_follow_model_mode(app):
+    legacy_text = _text(app)
+    assert "Squeeze breakeven 12.09%" in legacy_text and "Critical squeeze 8." in legacy_text
+    assert "Advanced engine." not in legacy_text
+    app.session_state["model_mode"] = "advanced"
+    app.run()
+    assert not app.exception
+    text = _text(app)
+    assert "Squeeze breakeven 11.21%" in text and "Critical squeeze 9." in text
+    assert "Advanced engine." in text
+    assert "as in the 41-point sweep above" in text
