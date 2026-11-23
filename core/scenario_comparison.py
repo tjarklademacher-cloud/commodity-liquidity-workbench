@@ -7,7 +7,10 @@ metrics are reported as not applicable (None).
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import zlib
 from collections.abc import Mapping, Sequence
 from typing import Literal
 
@@ -186,3 +189,30 @@ def load_config(raw: str | bytes) -> WorkbenchConfig:
         first = exc.errors()[0]
         where = ".".join(str(x) for x in first["loc"])
         raise ConfigError(f"Invalid value at {where}: {first['msg']}.") from exc
+
+
+MAX_SHARE_TOKEN_CHARS = 24_000
+
+
+def encode_share_token(config_json: str) -> str:
+    """Compact, URL-safe token for a configuration: minified JSON, zlib level 9, base64url without padding."""
+    minified = json.dumps(json.loads(config_json), separators=(",", ":"), sort_keys=True)
+    return base64.urlsafe_b64encode(zlib.compress(minified.encode("utf-8"), 9)).decode("ascii").rstrip("=")
+
+
+def decode_share_token(token: str) -> WorkbenchConfig:
+    """Inverse of encode_share_token. Bounded in size and validated through load_config; raises ConfigError."""
+    token = token.strip()
+    if not token or len(token) > MAX_SHARE_TOKEN_CHARS:
+        raise ConfigError("The shared link is empty or too long to be a workbench scenario.")
+    try:
+        compressed = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+        inflater = zlib.decompressobj()
+        raw = inflater.decompress(compressed, MAX_CONFIG_BYTES)
+        if inflater.unconsumed_tail:
+            raise ConfigError("The shared link expands beyond 1 MB; this is not a workbench scenario.")
+    except (binascii.Error, ValueError, zlib.error) as exc:
+        if isinstance(exc, ConfigError):
+            raise
+        raise ConfigError("The shared link is damaged or incomplete.") from exc
+    return load_config(raw)

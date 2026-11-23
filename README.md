@@ -119,6 +119,9 @@ in the test suite as a regression check on the engines.
 - **Caching.** Live loads are cached for 15 minutes; the stress sweep, heatmap, replay and Monte Carlo
   runs are cached on their full inputs, so slider moves and tab switches do not recompute unchanged work.
   The cache is shared across visitors, so a hosted copy queries Yahoo at most once per 15 minutes.
+- **Shareable links.** Sidebar, Configuration, "Share a link to this scenario" gives a URL that carries
+  every input (compressed into `?s=`). Opening it validates the whole configuration before applying it;
+  price data is not included, so the recipient sees the scenario on their own market data.
 - **Auto-refresh.** With the live feed selected, an open page reruns itself once the 15-minute cache has
   expired and picks up the new prices. Yahoo quotes are delayed, and the model uses daily closes, so a
   shorter interval would not add accuracy.

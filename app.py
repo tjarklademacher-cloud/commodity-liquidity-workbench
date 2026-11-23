@@ -21,7 +21,7 @@ from core.advanced_schemas import AdvancedSettings, ScenarioSpec
 from core.borrowing_base import calculate_borrowing_base, compare_concentration_cap_tiers
 from core.cashflow_engine import deterministic_paths, ledger_frame, run_cashflow_ledger
 from core.market_calibration import percentile_interval
-from core.scenario_comparison import compare_scenarios
+from core.scenario_comparison import compare_scenarios, encode_share_token
 from core.data_feed import DEFAULT_SAMPLE_CSV_PATH
 from core.haircuts import compute_portfolio_inventory
 from core.schemas import (
@@ -43,6 +43,7 @@ from ui.advanced_views import (
     RISK_MEASURE_NOTES,
     SIM_METHOD_LABELS,
     apply_uploaded_config,
+    apply_shared_token,
     build_config,
     cashflow_mc_kpis,
     clear_alternative,
@@ -367,9 +368,15 @@ def sidebar_configuration(config_json: str, file_stub: str) -> None:
                              help="Data only: every field is validated and nothing in the file is executed. "
                                   "Market data is not part of a configuration.")
     st.sidebar.button("Apply configuration", width="stretch", on_click=apply_uploaded_config, key="apply_config_btn")
+    with st.sidebar.expander("Share a link to this scenario"):
+        base = (st.context.url or "").split("?", 1)[0]
+        st.code(f"{base}?s={encode_share_token(config_json)}", language=None, wrap_lines=False)
+        st.caption("Copy with the icon at the top right of the box. The link carries every input on this page, "
+                   "not the price data: whoever opens it sees the scenario on their own market data.")
     ss = st.session_state
     if ss.get("config_error"):
-        st.sidebar.error(f"Configuration not applied. {ss['config_error']}")
+        msg = ss["config_error"]
+        st.sidebar.error(msg if msg.startswith("Shared link") else f"Configuration not applied. {msg}")
     elif ss.get("config_message"):
         st.sidebar.success(ss["config_message"])
 
@@ -404,6 +411,10 @@ def main() -> None:
     )
     inject_custom_css()
     init_session_state()
+    shared = st.query_params.get("s")
+    if shared and st.session_state.get("_applied_share_token") != shared:
+        st.session_state["_applied_share_token"] = shared
+        apply_shared_token(st.session_state, shared)
 
     model_mode = sidebar_model_mode()
     advanced = model_mode == MODEL_ADVANCED

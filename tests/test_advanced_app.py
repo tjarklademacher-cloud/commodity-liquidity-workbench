@@ -192,3 +192,32 @@ def test_intro_card_shows_once_and_dismisses(app):
     assert app.session_state["intro_dismissed"] is True
     assert "Start here" not in _text(app)
     assert "-$1.79M" in _text(app)
+
+
+def test_shared_link_round_trip_applies_scenario():
+    source = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
+    source.run()
+    source.session_state["parallel_shock"] = -7
+    source.session_state["unrestricted_cash_m"] = 9.5
+    source.run()
+    share_box = next(c.value for c in source.code if "?s=" in c.value)
+    token = share_box.split("?s=", 1)[1]
+
+    target = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
+    target.query_params["s"] = token
+    target.run()
+    assert not target.exception
+    assert target.session_state["parallel_shock"] == -7
+    assert target.session_state["unrestricted_cash_m"] == 9.5
+    assert "shared link" in target.session_state["config_message"]
+    target.run()
+    assert target.session_state["parallel_shock"] == -7
+
+
+def test_damaged_shared_link_changes_nothing():
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
+    at.query_params["s"] = "not-a-real-token"
+    at.run()
+    assert not at.exception
+    assert at.session_state["parallel_shock"] == 14
+    assert at.session_state["config_error"].startswith("Shared link not applied")

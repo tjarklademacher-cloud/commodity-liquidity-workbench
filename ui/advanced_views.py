@@ -34,6 +34,7 @@ from core.scenario_comparison import (
     ScenarioState,
     SimulationState,
     WorkbenchConfig,
+    decode_share_token,
     dump_config,
     load_config,
 )
@@ -756,3 +757,18 @@ def apply_uploaded_config() -> None:
     ss.editor_nonce += 1
     ss["config_message"] = (f"Configuration applied: {len(cfg.positions)} commodities, {len(cfg.receivables)} "
                             f"receivables, {MODEL_LABELS[cfg.model_mode].lower()} model.")
+
+
+def apply_shared_token(ss: Any, token: str) -> None:
+    """Apply a scenario from a shared link (?s=...). Validated in full before any state changes."""
+    ss.pop("config_error", None)
+    ss.pop("config_message", None)
+    try:
+        cfg = decode_share_token(token)
+        check_config_for_ui(cfg)
+    except ConfigError as exc:
+        ss["config_error"] = f"Shared link not applied. {exc}"
+        return
+    _apply_config(ss, cfg)
+    ss.editor_nonce += 1
+    ss["config_message"] = "Scenario loaded from a shared link. Prices come from this page's own market data."

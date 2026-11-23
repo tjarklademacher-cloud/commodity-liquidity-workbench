@@ -57,7 +57,9 @@ from core.scenario_comparison import (
     ScenarioState,
     WorkbenchConfig,
     compare_scenarios,
+    decode_share_token,
     dump_config,
+    encode_share_token,
     load_config,
 )
 from core.schemas import (
@@ -468,6 +470,26 @@ def test_config_round_trip(default_positions, default_receivables, default_terms
     cfg = _config(default_positions, default_receivables, default_terms)
     back = load_config(dump_config(cfg).encode())
     assert back == cfg
+
+
+def test_share_token_round_trip_is_url_safe_and_short(default_positions, default_receivables, default_terms):
+    cfg = _config(default_positions, default_receivables, default_terms)
+    token = encode_share_token(dump_config(cfg))
+    assert set(token) <= set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+    assert len(token) < 4_000
+    assert decode_share_token(token) == cfg
+
+
+def test_share_token_rejects_damage_and_bombs():
+    import base64
+    import zlib
+
+    for bad in ["", "%%%", "QUJD", "x" * 30_000]:
+        with pytest.raises(ConfigError):
+            decode_share_token(bad)
+    bomb = base64.urlsafe_b64encode(zlib.compress(b" " * 5_000_000, 9)).decode().rstrip("=")
+    with pytest.raises(ConfigError, match="1 MB"):
+        decode_share_token(bomb)
 
 
 @pytest.mark.parametrize(
