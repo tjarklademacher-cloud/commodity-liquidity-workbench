@@ -47,6 +47,7 @@ def as_stress_point(adv: AdvancedScenarioResult, shock_pct: float) -> StressScen
         im_addon_outflow=adv.im_additional, bb_deficiency_cure=adv.bb_deficiency_cure,
         total_cash_outflows=adv.total_cash_outflows, total_liquid_resources=adv.total_liquid_resources,
         net_liquidity_buffer=adv.net_liquidity_buffer, margin_line_draw=adv.margin_line_draw,
+        funding_carry_outflow=adv.funding_carry_outflow,
         regime=adv.regime, regime_explanation=adv.regime_explanation, shocked_bb_result=adv.shocked_bb_result,
     )
 

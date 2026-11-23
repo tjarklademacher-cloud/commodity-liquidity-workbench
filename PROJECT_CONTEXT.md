@@ -596,9 +596,15 @@ Open items:
 5. Advanced follow-ups (sweep, heatmap and hedge frontier done 2026-11-23): funding plan and runway through
    the advanced engine; volatility-dependent IM; replace illustrative IM defaults with dated exchange notices entered as user assumptions.
 
+Done 2026-11-23: funding cost, carry and receivable dilution reserve as sidebar inputs (sidebar, "Funding cost,
+carry and dilution"), all zero by default so calibrated figures are unchanged. Interest on the drawn balance
+plus carry on physical inventory value, over a horizon in days (actual/360), is a cash outflow in every engine;
+the dilution reserve is deducted from eligible receivables before the advance rate and shown as its own
+bridge step. Example: 8% revolver rate, 30 days, lowers the +14% buffer by 0.89M to -2.68M. Also added that
+day: first-visit guide, README screenshot, shareable scenario links (`?s=`), advanced sweep/grid/frontier.
+
 Ideas offered but not yet chosen by the owner (good next candidates):
-- Other ideas raised earlier: funding cost and carry, receivable dilution reserves (left out because it changes
-  calibrated figures), LinkedIn link in the author panel if the owner provides a URL.
+- LinkedIn link in the author panel if the owner provides a URL.
 
 How to work on this project (the owner's preferred workflow):
 - The owner describes changes in plain words; for open-ended requests, offer options as a click-through

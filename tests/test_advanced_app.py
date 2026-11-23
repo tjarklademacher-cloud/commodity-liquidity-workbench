@@ -234,3 +234,13 @@ def test_sweep_heatmap_and_briefing_follow_model_mode(app):
     assert "Squeeze breakeven 11.21%" in text and "Critical squeeze 9." in text
     assert "Advanced engine." in text
     assert "as in the 41-point sweep above" in text
+
+
+def test_funding_carry_inputs_move_the_verdict(app):
+    assert app.session_state["revolver_rate_pct"] == 0.0
+    app.session_state["revolver_rate_pct"] = 8.0
+    app.session_state["dilution_pct"] = 5.0
+    app.run()
+    assert not app.exception
+    # 133M drawn at 8% for 30 days (actual/360) = 0.89M less buffer than the -1.79M baseline.
+    assert "-$2.68M" in _text(app)

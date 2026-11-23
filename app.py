@@ -177,6 +177,10 @@ WIDGET_DEFAULTS: dict[str, object] = {
     "hedge_scope": ALL_COMMODITIES,
     "replay_source": "loaded",
     "margin_line_m": DEFAULT_FACILITY_TERMS.margin_line_limit / 1e6,
+    "dilution_pct": DEFAULT_FACILITY_TERMS.ar_dilution_reserve_pct * 100,
+    "revolver_rate_pct": DEFAULT_FACILITY_TERMS.revolver_interest_rate * 100,
+    "carry_rate_pct": DEFAULT_FACILITY_TERMS.inventory_carry_rate * 100,
+    "carry_days": DEFAULT_FACILITY_TERMS.carry_horizon_days,
     "report_ccy": "USD",
     "cfp_target": "active",
 }
@@ -260,6 +264,23 @@ def sidebar_facility_terms() -> FacilityTerms:
                                  "margin). It cannot be used for a borrowing base deficiency cure. 0 = none.")
     st.sidebar.slider("IM step-up trigger (largest move, %)", 5, 20, step=1, key="im_trigger_pct")
     st.sidebar.slider("IM step-up size (% of baseline IM)", 0, 50, step=1, key="im_addon_pct")
+    with st.sidebar.expander("Funding cost, carry and dilution"):
+        st.number_input("Revolver interest rate (% a year)", min_value=0.0, max_value=50.0, step=0.25,
+                        format="%.2f", key="revolver_rate_pct",
+                        help="Interest on the drawn balance due within the horizon below. The daily ledger in "
+                             "Advanced mode has its own rate setting.")
+        st.number_input("Inventory carry cost (% a year)", min_value=0.0, max_value=50.0, step=0.25,
+                        format="%.2f", key="carry_rate_pct",
+                        help="Storage, insurance and other carry on the physical inventory value.")
+        st.number_input("Horizon for interest and carry (days)", min_value=1, max_value=365, step=1,
+                        key="carry_days",
+                        help="Interest and carry falling due within this many days are a cash outflow in the "
+                             "net liquidity buffer (simple interest, actual/360).")
+        st.number_input("Receivable dilution reserve (% of eligible)", min_value=0.0, max_value=50.0, step=0.5,
+                        format="%.1f", key="dilution_pct",
+                        help="Reserve for credit notes, returns and disputes, deducted from eligible receivables "
+                             "before the advance rate.")
+        st.caption("All zero by default. Enter your own rates; none are assumed.")
     ss = st.session_state
     payload = {
         **ss.get("terms_base", {}),
@@ -271,6 +292,10 @@ def sidebar_facility_terms() -> FacilityTerms:
         "im_stepup_trigger": float(ss["im_trigger_pct"]) / 100.0,
         "im_stepup_fraction": float(ss["im_addon_pct"]) / 100.0,
         "margin_line_limit": float(ss["margin_line_m"]) * 1e6,
+        "ar_dilution_reserve_pct": float(ss["dilution_pct"]) / 100.0,
+        "revolver_interest_rate": float(ss["revolver_rate_pct"]) / 100.0,
+        "inventory_carry_rate": float(ss["carry_rate_pct"]) / 100.0,
+        "carry_horizon_days": int(ss["carry_days"]),
     }
     try:
         return FacilityTerms.model_validate(payload)
@@ -837,6 +862,8 @@ def main() -> None:
                         ("Variation margin paid", fmt_millions(adv.vm_payable), False),
                         ("Additional initial margin", fmt_millions(adv.im_additional), False),
                         ("BB deficiency cure", fmt_millions(adv.bb_deficiency_cure), False),
+                        *([("Interest and carry", fmt_millions(adv.funding_carry_outflow), False)]
+                          if adv.funding_carry_outflow > 0 else []),
                         ("Liquid resources", fmt_millions(adv.total_liquid_resources), False),
                         ("Cash outflows", fmt_millions(adv.total_cash_outflows), False),
                         ("Net liquidity buffer", f"<b>{fmt_signed_millions(adv.net_liquidity_buffer)}</b>", False),
@@ -889,11 +916,15 @@ def main() -> None:
                 "Net buffer": sweep_df["net_liquidity_buffer"] / money_divisor(),
                 "Regime": [regime_label(r) for r in sweep_df["regime"]],
             })
+            money_cols = ["Borrowing base", "Headroom", "VM call", "VM inflow", "IM step-up", "BB cure", "Net buffer"]
+            if sweep_df["funding_carry_outflow"].abs().max() > 0:
+                view.insert(view.columns.get_loc("Net buffer"), "Interest and carry",
+                            sweep_df["funding_carry_outflow"] / money_divisor())
+                money_cols.insert(-1, "Interest and carry")
             st.dataframe(
                 view, width="stretch", hide_index=True,
                 column_config={"Shock": st.column_config.NumberColumn("Shock", format="%+.0f%%"),
-                               **{c: _money_column(c) for c in ["Borrowing base", "Headroom", "VM call", "VM inflow",
-                                                                 "IM step-up", "BB cure", "Net buffer"]}},
+                               **{c: _money_column(c) for c in money_cols}},
             )
             st.download_button(
                 "Download sweep (CSV, full precision)", data=sweep_df.to_csv(index=False),

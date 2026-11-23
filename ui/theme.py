@@ -95,6 +95,7 @@ BRIDGE_LABELS: dict[str, str] = {
     "Inv. Haircuts": "Inventory haircuts",
     "Eligible Inventory": "Eligible inventory",
     "Gross AR": "Gross receivables",
+    "Dilution Reserve": "Dilution reserve",
     "AR Haircuts": "Receivable advance haircuts",
     "Conc. Cutback": "Concentration cutback",
     "Final Borrowing Base": "Borrowing base",

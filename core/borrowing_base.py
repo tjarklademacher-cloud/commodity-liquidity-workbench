@@ -72,7 +72,8 @@ def _value_receivables(receivables: Sequence[ReceivableItem], terms: FacilityTer
             if is_aging_eligible
             else 0.0
         )
-        pre_cap_eligible = eligible_gross_amount * ar_advance_rate
+        dilution_reserve = eligible_gross_amount * terms.ar_dilution_reserve_pct
+        pre_cap_eligible = (eligible_gross_amount - dilution_reserve) * ar_advance_rate
         rows.append(
             {
                 "rec": rec,
@@ -80,7 +81,8 @@ def _value_receivables(receivables: Sequence[ReceivableItem], terms: FacilityTer
                 "aging_ineligible_amount": rec.gross_amount - eligible_gross_amount,
                 "eligible_gross_amount": eligible_gross_amount,
                 "ar_advance_rate": ar_advance_rate,
-                "ar_haircut_amount": eligible_gross_amount - pre_cap_eligible,
+                "dilution_reserve": dilution_reserve,
+                "ar_haircut_amount": eligible_gross_amount - dilution_reserve - pre_cap_eligible,
                 "pre_cap_eligible": pre_cap_eligible,
             }
         )
@@ -148,6 +150,7 @@ def calculate_borrowing_base(
     gross_receivables = sum(r.gross_amount for r in receivables)
     aging_ineligible_dollars = sum(r["aging_ineligible_amount"] for r in rec_rows)
     ar_advance_haircut_dollars = sum(r["ar_haircut_amount"] for r in rec_rows)
+    dilution_reserve_dollars = sum(r["dilution_reserve"] for r in rec_rows)
     pre_cap_eligible_receivables = sum(pre_caps)
     concentration_cutback_dollars = pre_cap_eligible_receivables - final_eligible_receivables
 
@@ -157,6 +160,7 @@ def calculate_borrowing_base(
         ("Eligible Inventory", eligible_inventory, "total"),
         ("Gross AR", gross_receivables, "relative"),
         (f"Aging >{terms.ar_aging_limit_days}d", -aging_ineligible_dollars, "relative"),
+        *([("Dilution Reserve", -dilution_reserve_dollars, "relative")] if dilution_reserve_dollars > 0 else []),
         ("AR Haircuts", -ar_advance_haircut_dollars, "relative"),
         ("Conc. Cutback", -concentration_cutback_dollars, "relative"),
         ("Final Borrowing Base", final_borrowing_base, "total"),
@@ -183,6 +187,7 @@ def calculate_borrowing_base(
         ar_advance_haircut_dollars=ar_advance_haircut_dollars,
         pre_cap_eligible_receivables=pre_cap_eligible_receivables,
         concentration_cutback_dollars=concentration_cutback_dollars,
+        dilution_reserve_dollars=dilution_reserve_dollars,
         final_eligible_receivables=final_eligible_receivables,
         concentration_cap_pct=cap_pct,
         cap_dollar_limit=cap_dollar_limit,

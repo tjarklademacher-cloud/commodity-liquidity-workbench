@@ -185,6 +185,7 @@ class AdvancedScenarioResult(BaseModel):
     margin_line_draw: float
     margin_funded_from_cash: float
     bb_deficiency_cure: float
+    funding_carry_outflow: float = 0.0
     total_liquid_resources: float
     total_cash_outflows: float
     net_liquidity_buffer: float

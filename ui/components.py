@@ -179,8 +179,8 @@ and solvent book can therefore run short of cash. In a sell-off the cash flows r
 back in, but the borrowing base shrinks and the lender can demand a deficiency paydown.
 
 **Net liquidity buffer**, the number used throughout: unrestricted cash + revolver headroom + margin
-inflows, minus margin calls, initial margin step-up and any borrowing base deficiency cure. Below zero
-the desk cannot meet its cash calls.
+inflows, minus margin calls, initial margin step-up, any borrowing base deficiency cure and, if set in the
+sidebar, interest and carry due within the chosen horizon. Below zero the desk cannot meet its cash calls.
 
 **Who uses it.** Treasury, trading and risk teams at a physical merchant deciding how much cash, margin
 funding and facility headroom to hold, and when to act. Lenders and credit committees use the same view.

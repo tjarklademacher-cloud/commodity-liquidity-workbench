@@ -116,7 +116,9 @@ def run_stress_scenario(
         else 0.0
     )
     bb_deficiency_cure = max(0.0, terms.drawn_revolver - shocked_bb)
-    total_cash_outflows = vm_outflow + im_addon_outflow + bb_deficiency_cure
+    carry = terms.funding_carry_cost(
+        sum(pos.physical_qty * market_snapshot[pos.ticker].spot_price for pos in positions))
+    total_cash_outflows = vm_outflow + im_addon_outflow + bb_deficiency_cure + carry
     margin_line_draw = min(terms.margin_line_limit, vm_outflow + im_addon_outflow)
     total_liquid_resources = terms.unrestricted_cash + shocked_headroom + vm_inflow + margin_line_draw
     net_liquidity_buffer = total_liquid_resources - total_cash_outflows
@@ -142,6 +144,7 @@ def run_stress_scenario(
         total_liquid_resources=total_liquid_resources,
         net_liquidity_buffer=net_liquidity_buffer,
         margin_line_draw=margin_line_draw,
+        funding_carry_outflow=carry,
         regime=regime,
         regime_explanation=explanation,
         shocked_bb_result=shocked_bb_result,

@@ -697,6 +697,10 @@ def _apply_config(ss: Any, cfg: WorkbenchConfig) -> None:
     ss["im_trigger_pct"] = int(round(t.im_stepup_trigger * 100))
     ss["im_addon_pct"] = int(round(t.im_stepup_fraction * 100))
     ss["margin_line_m"] = t.margin_line_limit / 1e6
+    ss["dilution_pct"] = t.ar_dilution_reserve_pct * 100
+    ss["revolver_rate_pct"] = t.revolver_interest_rate * 100
+    ss["carry_rate_pct"] = t.inventory_carry_rate * 100
+    ss["carry_days"] = t.carry_horizon_days
     by_ticker = {p.ticker: p for p in cfg.positions}
     ss["inventory_df"] = pd.DataFrame([{
         "Ticker": tk, "Commodity": COMMODITY_SPECS[tk].name, "Unit": COMMODITY_SPECS[tk].unit,

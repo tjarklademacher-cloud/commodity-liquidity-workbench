@@ -103,6 +103,18 @@ class FacilityTerms(BaseModel):
     ar_non_ig_advance_rate: float = Field(ge=0.0, le=1.0, default=0.75)
     default_active_shock_pct: float = Field(ge=-0.50, le=0.50, default=0.14)
     margin_line_limit: float = Field(ge=0.0, default=0.0)
+    # Funding cost, carry and dilution: all zero by default so the calibrated figures are unchanged.
+    ar_dilution_reserve_pct: float = Field(ge=0.0, le=0.5, default=0.0)
+    revolver_interest_rate: float = Field(ge=0.0, le=0.5, default=0.0)
+    inventory_carry_rate: float = Field(ge=0.0, le=0.5, default=0.0)
+    carry_horizon_days: int = Field(ge=1, le=365, default=30)
+
+    def funding_carry_cost(self, inventory_value: float) -> float:
+        """Cash due within the carry horizon: revolver interest on the drawn balance plus storage, insurance
+        and other carry on the physical inventory value, simple interest on an actual/360 basis."""
+        accrual = self.carry_horizon_days / 360.0
+        return (self.drawn_revolver * self.revolver_interest_rate
+                + max(0.0, inventory_value) * self.inventory_carry_rate) * accrual
 
 
 class InventoryValuation(BaseModel):
@@ -177,6 +189,7 @@ class BorrowingBaseResult(BaseModel):
     ar_advance_haircut_dollars: float
     pre_cap_eligible_receivables: float
     concentration_cutback_dollars: float
+    dilution_reserve_dollars: float = 0.0
     final_eligible_receivables: float
     concentration_cap_pct: float
     cap_dollar_limit: float
@@ -221,6 +234,7 @@ class StressScenarioResult(BaseModel):
     total_liquid_resources: float
     net_liquidity_buffer: float
     margin_line_draw: float = 0.0
+    funding_carry_outflow: float = 0.0
     regime: LiquidityRegime
     regime_explanation: str
     shocked_bb_result: BorrowingBaseResult
@@ -248,6 +262,7 @@ class StressSweepResult(BaseModel):
                 "vm_inflow": p.vm_inflow,
                 "im_addon_outflow": p.im_addon_outflow,
                 "bb_deficiency_cure": p.bb_deficiency_cure,
+                "funding_carry_outflow": p.funding_carry_outflow,
                 "total_cash_outflows": p.total_cash_outflows,
                 "total_liquid_resources": p.total_liquid_resources,
                 "net_liquidity_buffer": p.net_liquidity_buffer,

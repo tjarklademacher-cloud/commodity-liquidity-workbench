@@ -95,7 +95,8 @@ def evaluate_shock_matrix(
         max_abs >= terms.im_stepup_trigger - 1e-9, terms.im_stepup_fraction * terms.baseline_initial_margin, 0.0
     )
     cure = np.maximum(0.0, terms.drawn_revolver - shocked_bb)
-    outflows = vm_outflow + im + cure
+    carry = terms.funding_carry_cost(sum(p.physical_qty * market_snapshot[p.ticker].spot_price for p in positions))
+    outflows = vm_outflow + im + cure + carry
     margin_draw = np.minimum(terms.margin_line_limit, vm_outflow + im)
     resources = terms.unrestricted_cash + shocked_headroom + vm_inflow + margin_draw
     nlb = resources - outflows
@@ -113,6 +114,7 @@ def evaluate_shock_matrix(
         "im_addon_outflow": im,
         "margin_line_draw": margin_draw,
         "bb_deficiency_cure": cure,
+        "funding_carry_outflow": np.full(shocks.shape[0], carry),
         "net_liquidity_buffer": nlb,
         "regime_code": regime,
     }

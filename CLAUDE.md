@@ -99,6 +99,9 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 - Model mode: `model_mode` "legacy" (default) or "advanced". Legacy outputs must not change. Advanced editors
   `margin_editor_{nonce}` / `basis_editor_{nonce}` are always rendered (collapsed expanders) so edits survive
   mode switches; callbacks that bump the nonce call `commit_pending_edits` first. Reset clears all advanced state.
+- Funding cost, carry and dilution (`FacilityTerms.revolver_interest_rate`, `inventory_carry_rate`,
+  `carry_horizon_days`, `ar_dilution_reserve_pct`) default to 0 so every pinned figure is unchanged; the
+  carry outflow is in `run_stress_scenario`, `evaluate_shock_matrix` and `run_advanced_scenario` alike.
 - Never invent exchange margins, basis, prices or rates: defaults are labelled illustrative; edited values are
   `assumption_type="user"`. Uploaded configurations are data only (`load_config`), validated before any state changes.
 - `evaluate_shock_matrix` must stay identical to `run_stress_scenario`; `tests/test_scenario_analytics.py`

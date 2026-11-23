@@ -352,6 +352,8 @@ def build_active_shock_sources_uses_chart(stress_result: StressScenarioResult, t
         ("Futures VM call", -stress_result.vm_outflow),
         ("IM step-up call", -stress_result.im_addon_outflow),
         ("BB deficiency cure", -stress_result.bb_deficiency_cure),
+        *([("Interest and carry", -stress_result.funding_carry_outflow)]
+          if stress_result.funding_carry_outflow > 0 else []),
     ]
     labels = [_wrap_label(s[0]) for s in steps] + ["Net liquidity<br>buffer"]
     amounts = [s[1] for s in steps] + [stress_result.net_liquidity_buffer]

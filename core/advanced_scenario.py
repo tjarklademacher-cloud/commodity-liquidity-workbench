@@ -149,8 +149,9 @@ def run_advanced_scenario(
     draw = min(capacity, eligible_need)
     margin_need = vm_payable + im_additional
     cure = max(0.0, terms.drawn_revolver - shocked_bb.final_borrowing_base)
+    carry = terms.funding_carry_cost(phys_value_0)
     resources = terms.unrestricted_cash + shocked_headroom + vm_receivable + im_released + draw
-    outflows = vm_payable + im_additional + cure
+    outflows = vm_payable + im_additional + cure + carry
     nlb = resources - outflows
     regime, explanation = classify_liquidity_regime(nlb, vm_payable, headroom_change, cure,
                                                     margin_line_vm_cover=min(draw, vm_payable))
@@ -162,6 +163,7 @@ def run_advanced_scenario(
         im_posted_opening=posted, im_required=required, im_additional=im_additional, im_released=im_released,
         margin_cash_need=margin_need, margin_line_capacity=capacity, margin_line_eligible_need=eligible_need,
         margin_line_draw=draw, margin_funded_from_cash=max(0.0, margin_need - draw), bb_deficiency_cure=cure,
+        funding_carry_outflow=carry,
         total_liquid_resources=resources, total_cash_outflows=outflows, net_liquidity_buffer=nlb,
         regime=regime, regime_explanation=explanation,
         physical_inventory_value_0=phys_value_0, physical_inventory_value_1=phys_value_1, **totals,
