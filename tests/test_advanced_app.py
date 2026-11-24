@@ -23,7 +23,7 @@ from core.schemas import (
 
 ROOT = Path(__file__).resolve().parent.parent
 TABS = ["Overview", "Borrowing base", "Inventory", "Receivables", "Stress sweep", "Scenario heatmap",
-        "Monte Carlo LaR", "Hedging", "Funding plan", "Replays"]
+        "Monte Carlo LaR", "Treasury", "Credit", "Hedging", "Funding plan", "Replays", "Case study 2022"]
 
 
 @pytest.fixture()

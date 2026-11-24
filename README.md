@@ -41,9 +41,13 @@ tests/  pytest suite, including Streamlit AppTest end-to-end runs
 | **Stress sweep** | At what price move do we run out of cash? | Parallel shocks from -20% to +20% in 1% steps. Net liquidity buffer = cash + headroom + margin inflows, minus margin calls, initial margin step-up and deficiency cure. Breakevens are interpolated between grid points. |
 | **Scenario heatmap** | Which mixed moves are dangerous? | Metals (Gold, Copper) and softs/lumber (Lumber, Cocoa, Coffee, Sugar) shocked independently on a 17 x 17 grid, with the zero-buffer contour drawn. |
 | **Monte Carlo LaR** | How bad is a bad week, and how long can we last? | Thousands of correlated price paths over 1, 5, 10 or 20 trading days, drawn from the recent return covariance via Cholesky decomposition. Reports LaR 95% and 99% (5th and 1st percentile buffer), expected shortfall and regime probabilities. The liquidity runway follows daily paths for 20 trading days: a percentile fan of the buffer and the share of paths that have run short by each day. |
-| **Hedging** | How much should we hedge? | Sweeps the hedge ratio of one commodity, or all at once, from 0% to 100%. Each ratio is re-valued (the unhedged haircut penalty changes) and run through the 41 parallel shocks. The liquidity-optimal ratio keeps the buffer at or above zero in the most shocks; it is shown next to the inventory value left unprotected in a 20% fall. |
+| **Hedging** | How much should we hedge? | Sweeps the hedge ratio of one commodity, or all at once, from 0% to 100%. Each ratio is re-valued (the unhedged haircut penalty changes) and run through the 41 parallel shocks. The liquidity-optimal ratio keeps the buffer at or above zero in the most shocks; it is shown next to the inventory value left unprotected in a 20% fall. A stochastic frontier below runs every ratio through the same simulated paths and the daily engine, and plots economic downside against the 95th percentile funding need with Pareto-efficient, dominated and infeasible ratios marked; no ratio is presented as universally optimal. |
 | **Funding plan** | What breaks us, and what fixes it? | A contingency funding plan as regulators ask of commodity traders: single-commodity reverse stress test (smallest rally that exhausts liquidity, smallest fall that opens a deficiency), early-warning triggers read off the sweep, and the size of each remedial action (cash, margin financing line, revolver accordion, pro rata hedge cut) that restores a zero buffer, each verified with the stress engine. |
+| **Treasury** | Day by day, when does the cash run out, and why? | A path-dependent daily engine: each day inherits the previous day's state (cash, restricted margin, inventory, receivables, payables, debt). Variation margin, initial margin, collections, supplier payments, interest, fees, borrowing base redetermination, deficiency cure and a funding waterfall with delays. Exact cash reconciliation and a net-worth identity every day. Haircut sensitivity, a cash flow waterfall, an exportable ledger, and a Monte Carlo over the same engine with five return models (Gaussian, Student t, block bootstrap, EWMA, GARCH) reporting breach probability, Liquidity-at-Risk as a deterioration, expected liquidity shortfall, funding percentiles and a survival curve. Optional out-of-sample validation. |
+| **Credit** | What do late payers and defaults do to liquidity? | Counterparty exposure, concentration, insured share and expected credit loss (PD x LGD x uninsured exposure, illustrative PDs). Deterministic stresses (largest buyer late, downgraded, defaulting) through the daily engine, against simulated correlated defaults with optional wrong-way loading. |
 | **Replays** | How would today's book have fared in real stress? | Either the loaded price history (borrowing base, daily margin, 5-day stressed buffer), or observed Yahoo Finance futures prices for four real episodes: Covid-19 crash 2020, Brazil coffee frost 2021, Russia-Ukraine shock 2022, cocoa squeeze 2024. Each day's cumulative move is applied to today's spot prices, with that day's observed 30-day volatility in the haircuts. Commodities without history in a window (CME physical lumber before August 2022) are held at today's price and flagged. |
+
+| **Case study 2022** | Why can a hedged merchant run out of cash? | Observed 2022 TTF gas futures prices (Yahoo Finance, fetched on request) applied to a clearly hypothetical gas storage merchant that is short futures against its stock. Variants add one mechanism at a time: operations and payment timing, dynamic haircuts and volatility-scaled margin, synthetic location basis, customer delay and default, and an alternative committed line. Economic P&L stays small while the cash requirement peaks far above it. |
 
 **Desk features**
 
@@ -75,6 +79,24 @@ buffer, and a reconciliation table shows how each advanced assumption moves the 
   backtest of the margin forecast.
 - **Saved configurations.** Download every input as versioned JSON and restore it later; uploads are validated
   field by field and never executed.
+
+**Daily treasury engine and institutional upgrade**
+
+The Treasury, Credit and Case study tabs, the Overview projection panel and the stochastic hedge frontier run
+on one instrument-agnostic daily engine (`core/treasury_engine.py`). Its defaults leave every published figure
+unchanged (zero rates, no minimum cash, no physical turnover, scheduled collections), and a test shows it
+reproduces the advanced daily ledger where their features overlap. Full specification, equations, the worked
+example and limitations: [docs/METHODOLOGY.md](docs/METHODOLOGY.md). Implementation log:
+[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
+
+- Separate economic P&L, realized cash, restricted collateral, debt and undrawn capacity; initial margin is
+  restricted cash, never an expense; variation margin is counted once.
+- Dynamic haircuts from path volatility, lender tightening and contractual limits; haircut-only and
+  haircut-plus-advance-rate conventions with a double-deduction warning.
+- Futures curve with rolls (no cash beyond costs at the roll), mean-reverting synthetic basis, unit and
+  currency conversion with dimension checks.
+- Counterparty payment delays, disputes, downgrades below eligibility, defaults with insurance claims and
+  recoveries paid later, and a one-factor correlated default model whose default rates match their targets.
 
 **Key assumptions (legacy model)**
 
@@ -130,7 +152,40 @@ in the test suite as a regression check on the engines.
   shorter interval would not add accuracy.
 - **Crisis episodes.** Fetched from Yahoo Finance on first use and cached for a day. Without internet
   the Replays tab shows a short notice and every other view keeps working.
+- **2022 TTF case study.** Yahoo Finance `TTF=F` (continuous front-month Dutch TTF gas futures, EUR/MWh),
+  2022 daily closes, fetched only when the case study is opened and cached for a day. A vendor-assembled
+  continuous series with roll jumps. Without internet the tab shows a notice; no synthetic prices are
+  substituted for it.
 - **Secrets.** None are required. No credentials are read or stored.
+
+## Testing and validation
+
+The suite (`.venv/bin/python -m pytest`) covers the audited legacy figures, the advanced model, Streamlit
+`AppTest` runs of the whole interface and the new engines. The new tests use expected values calculated by
+hand in the test file (not produced by the code under test): a multi-day worked example, variation margin signs
+for long and short positions, initial margin calls and releases, delayed drawdowns, deficiency cures, the
+commitment cap, dynamic haircut limits, receivable aging, insurance claims, recoveries, partial payments, unit
+conversions, rolls and maturity mismatch, plus accounting invariants (cash reconciliation, net-worth identity,
+no cash from inventory appreciation, zero P&L for zero exposure). Monte Carlo tests cover seed reproducibility,
+Student t covariance normalization, synchronized bootstrap rows, correlation targets, GARCH parameter recovery,
+default-rate calibration and path-maximum funding. GitHub Actions (`.github/workflows/ci.yml`) runs static
+checks, the financial benchmarks, the full suite with coverage and a headless server health check. A passing
+test count is not a substitute for financial review; see the validation notes in the methodology.
+
+## Reproducibility
+
+Every simulation takes an explicit seed (shown in the interface and recorded in the Monte Carlo JSON export
+with the method, horizon, paths and settings). The bundled price file is regenerated deterministically with
+`python -m core.data_feed --generate-sample`. The daily ledger, sensitivity tables, credit tables, frontier and
+case study results can be downloaded as CSV.
+
+## Model limitations
+
+This is a research and educational financial modelling project, not a validated production trading,
+treasury or credit decision system. Financing agreements are simplified; haircut, margin, basis, curve and
+credit parameters are illustrative assumptions, not lender, exchange or rating agency data; the
+volatility-scaled initial margin is a proxy, not an exchange margin model; physical prices are futures plus a
+synthetic basis; the bundled sample is synthetic. Full list in [docs/METHODOLOGY.md](docs/METHODOLOGY.md).
 
 ## Author
 
@@ -156,6 +211,12 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/python -m pytest
+```
+
+Development tools used by CI (static checks and coverage):
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
 ```
 
 To rebuild the bundled price file:

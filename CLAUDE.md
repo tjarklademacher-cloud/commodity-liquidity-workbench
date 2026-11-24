@@ -42,7 +42,20 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 | `ui/charts.py` | The original six Plotly figures plus gauge, donut, regime ribbon, heatmap, MC, correlation, replay |
 | `ui/cache.py` | `st.cache_data` wrappers (live TTL 900s, scenario suite, Monte Carlo) and data-status label |
 | `ui/components.py` | Hero, KPI cards with sparklines, regime banner, insights, validated editors, exports, audits |
-| `app.py` | Entry point: branded 4-section sidebar, hero + regime banner, methodology expander, 8 tabs |
+| `core/units.py` | Unit and currency conversion; cross-dimension conversion needs an explicit factor |
+| `core/treasury_schemas.py` | Typed inputs of the daily engine (instruments, positions, counterparties, facility, policies) |
+| `core/futures_curve.py` | MarketPaths: calendar, synthetic curve, rolls, EWMA path volatility, OU basis |
+| `core/collateral.py` | Dynamic haircuts, haircut conventions, path-wise cap solver, borrowing base, availability |
+| `core/credit_risk.py` | Horizon PD, ECL, insurance and recovery, payment outcomes, copula defaults, migration |
+| `core/treasury_engine.py` | Daily treasury engine: single source of truth for path-dependent state |
+| `core/liquidity_metrics.py` | LaR as deterioration, ELS, breach probability, funding percentiles, survival |
+| `core/return_models.py` | Data preparation; Gaussian, Student t, bootstrap, EWMA, GARCH; matrix diagnostics |
+| `core/model_validation.py` | Kupiec, Christoffersen, rolling backtest, vol forecast scores, moments |
+| `core/treasury_analytics.py` | Adapter from the six-commodity book, scenarios, haircut and credit stress, Monte Carlo |
+| `core/hedge_frontier.py` | Stochastic multi-objective hedge frontier |
+| `core/case_study_2022.py` | Observed TTF 2022 prices through a hypothetical gas merchant |
+| `ui/treasury_views.py`, `ui/treasury_charts.py` | Treasury, Credit, Case study 2022 tabs, Overview projection, frontier panel |
+| `app.py` | Entry point: branded 4-section sidebar, hero + regime banner, methodology expander, 13 tabs |
 
 ## Zero-leakage boundary (enforced by `tests/test_architecture_and_app.py`)
 
@@ -116,3 +129,15 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python
 
 **Numerics**
 - Sweep grid `np.round(np.linspace(-0.20, 0.20, 41), 6)`; IM trigger uses `>= trigger - 1e-9`.
+
+**Treasury engine (docs/METHODOLOGY.md)**
+- `run_treasury` must keep `reconciliation_residual` and `networth_residual` near zero; tests assert both.
+  Never create cash to pay an obligation: negative cash is an unfunded shortfall.
+- Initial margin is restricted cash, never an expense; variation margin is counted once.
+- Expected values in `tests/test_treasury_engine.py` and `tests/test_credit_basis_units.py` are hand-calculated;
+  never regenerate them by running the engine.
+- Treasury defaults must leave legacy and advanced figures unchanged; keys are in `TREASURY_DEFAULTS`.
+- The case study fetches only on its button (`cs_loaded`); tests stay offline. Case study money is EUR and is
+  not converted. Never substitute synthetic data for the observed series.
+- LaR in the new engine is a deterioration quantile; do not relabel the legacy buffer-level LaR.
+

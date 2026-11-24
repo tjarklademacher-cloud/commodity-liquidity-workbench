@@ -10,6 +10,7 @@ import io
 import json
 from collections.abc import Mapping, Sequence
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -48,6 +49,21 @@ from core.schemas import (
     StressSweepResult,
 )
 from core.stress_engine import run_stress_sweep
+from core.advanced_schemas import MarginSettings
+from core.case_study_2022 import CaseStudyAssumptions, fetch_ttf_2022, run_case_study
+from core.hedge_frontier import HedgeConstraints
+from core.hedge_frontier import run_hedge_frontier as run_mo_frontier
+from core.model_validation import moment_comparison, var_backtest, vol_forecast_evaluation
+from core.return_models import ReturnModel, calibrate_return_model
+from core.schemas import REQUIRED_TICKERS
+from core.treasury_analytics import (
+    MonteCarloOutput,
+    TreasurySettings,
+    credit_stress_table,
+    haircut_sensitivity,
+    run_book_monte_carlo,
+    run_book_scenario,
+)
 
 LIVE_TTL_SECONDS = 900
 HISTORY_TTL_SECONDS = 86_400
@@ -269,3 +285,91 @@ def cached_cashflow_monte_carlo(
         n_paths=n_paths, basis_vol_annual=basis_vol, base_im_multipliers=json.loads(im_mults_json),
         apply_trigger_rule=apply_trigger_rule, winsorize_sigma=_winsor(winsorize),
     )
+
+
+# --------------------------------------------------------------------------- treasury engine (new analytics)
+
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_return_model(prices_df: pd.DataFrame, method: str, window: int | None, nu: float, block_days: int,
+                        ewma_lambda: float, correlation_mode: str) -> ReturnModel:
+    return calibrate_return_model(prices_df[list(REQUIRED_TICKERS)], method, window=window, nu=nu,
+                                  block_days=block_days, ewma_lambda=ewma_lambda, correlation_mode=correlation_mode)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_treasury_mc(inputs: tuple[str, str, str, str], margin_json: str, ts_json: str, prices_df: pd.DataFrame,
+                       model_key: tuple, n_paths: int, seed: int, confidence: float, credit_mode: str,
+                       wrong_way: float) -> MonteCarloOutput:
+    positions, receivables, terms, snapshot = _load_inputs(*inputs)
+    model = cached_return_model(prices_df, *model_key)
+    return run_book_monte_carlo(positions, receivables, snapshot, terms, MarginSettings.model_validate_json(margin_json),
+                                TreasurySettings.model_validate_json(ts_json), model, n_paths, seed, confidence,
+                                credit_mode, 0.2, wrong_way)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_haircut_sensitivity(inputs: tuple[str, str, str, str], margin_json: str, ts_json: str,
+                               shocks_json: str) -> pd.DataFrame:
+    positions, receivables, terms, snapshot = _load_inputs(*inputs)
+    return haircut_sensitivity(positions, receivables, snapshot, terms, MarginSettings.model_validate_json(margin_json),
+                               TreasurySettings.model_validate_json(ts_json), json.loads(shocks_json))
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def cached_mo_frontier(inputs: tuple[str, str, str, str], margin_json: str, ts_json: str, prices_df: pd.DataFrame,
+                       model_key: tuple, scope: str, n_paths: int, seed: int, max_breach: float | None,
+                       max_downside: float | None) -> pd.DataFrame:
+    positions, receivables, terms, snapshot = _load_inputs(*inputs)
+    model = cached_return_model(prices_df, *model_key)
+    return run_mo_frontier(positions, receivables, snapshot, terms, MarginSettings.model_validate_json(margin_json),
+                           TreasurySettings.model_validate_json(ts_json), model, scope,
+                           constraints=HedgeConstraints(max_breach_probability=max_breach,
+                                                        max_economic_downside=max_downside),
+                           n_paths=n_paths, seed=seed)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def cached_validation(prices_df: pd.DataFrame, positions_json: str, snapshot_json: str, method: str, window: int,
+                      level: float) -> dict:
+    """Out-of-sample one-day backtest of the hedge book's futures P&L, plus vol forecasts and moments."""
+    pos = json.loads(positions_json)
+    snap = json.loads(snapshot_json)
+    px = prices_df[list(REQUIRED_TICKERS)]
+    exposures = np.array([-sum(p["hedged_qty"] for p in pos if p["ticker"] == t) * snap[t]["spot_price"]
+                          for t in REQUIRED_TICKERS])
+    step = 5 if method == "garch" else 2
+    bt = var_backtest(px, exposures, method, window=window, level=level, step=step, n_sims=2000)
+    vols = vol_forecast_evaluation(px, ("gaussian", "ewma", "garch"), window=window, step=10)
+    moments = moment_comparison(px, method, window=window, n_paths=10_000)
+    return {"backtest": bt, "vol_eval": vols, "moments": moments,
+            "corr_gap": moments.attrs.get("max_correlation_gap", float("nan"))}
+
+
+@st.cache_data(ttl=HISTORY_TTL_SECONDS, show_spinner=False)
+def cached_ttf_2022() -> pd.Series:
+    return fetch_ttf_2022()
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def cached_case_study(observed: pd.Series, alt_line: float, opening_cash: float, hedge_ratio: float) -> dict:
+    a = CaseStudyAssumptions(alternative_line=alt_line, opening_cash=opening_cash, hedge_ratio=hedge_ratio)
+    out = run_case_study(observed, a)
+    out["ledgers"] = {name: {k: v[0].copy() for k, v in run.ledger.items()} for name, run in out.pop("runs").items()}
+    return out
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def cached_book_scenario(inputs: tuple[str, str, str, str], margin_json: str, ts_json: str, shocks_json: str):
+    positions, receivables, terms, snapshot = _load_inputs(*inputs)
+    return run_book_scenario(positions, receivables, snapshot, terms, MarginSettings.model_validate_json(margin_json),
+                             TreasurySettings.model_validate_json(ts_json), json.loads(shocks_json))
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_credit_stress(inputs: tuple[str, str, str, str], margin_json: str, ts_json: str,
+                         shocks_json: str) -> pd.DataFrame:
+    positions, receivables, terms, snapshot = _load_inputs(*inputs)
+    return credit_stress_table(positions, receivables, snapshot, terms, MarginSettings.model_validate_json(margin_json),
+                               TreasurySettings.model_validate_json(ts_json), json.loads(shocks_json))

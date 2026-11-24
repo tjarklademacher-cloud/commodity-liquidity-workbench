@@ -3,7 +3,9 @@
 Complete hand-over context for the **Commodity Liquidity Workbench**. Read this first in a new conversation.
 `CLAUDE.md` is the short rule sheet; `README.md` is the public-facing brief; this file is the full picture.
 
-Last updated: 2026-11-22, at commit `fa0bb0c` on `main` (154 tests passing).
+Last updated: 2026-11-23, on branch `feature/advanced-liquidity-model` after the institutional model upgrade
+(317 tests passing). The upgrade is described in section 15, `docs/METHODOLOGY.md` and
+`docs/IMPLEMENTATION_STATUS.md`.
 
 ---
 
@@ -42,7 +44,7 @@ From the repository root:
 ```bash
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python 3.11+ required
 .venv/bin/python -m streamlit run app.py          # opens on http://localhost:8501
-.venv/bin/python -m pytest                        # 154 tests, about 20 s
+.venv/bin/python -m pytest                        # 317 tests, about 90 s
 .venv/bin/python -m core.data_feed --generate-sample   # regenerate data/sample_prices.csv (deterministic)
 ```
 
@@ -87,6 +89,18 @@ core/                    pure Python models; MUST NOT import streamlit or plotly
   cashflow_engine.py      daily cash-flow ledger (vectorized over paths) and cash-flow Monte Carlo
   market_calibration.py   calibration windows, PSD repair, simulation methods, factor sample, backtest
   scenario_comparison.py  baseline / active / alternative comparison and versioned JSON configurations
+  units.py                unit (mass, volume, energy, board) and currency conversion with dimension checks
+  treasury_schemas.py     typed inputs of the daily engine: instruments, positions, counterparties, facility
+  futures_curve.py        MarketPaths: calendar, synthetic curve, rolls, EWMA path vol, OU basis
+  collateral.py           dynamic haircuts, haircut conventions, path-wise cap solver, borrowing base
+  credit_risk.py          horizon PD, ECL, insurance and recovery, payment outcomes, copula defaults, migration
+  treasury_engine.py      daily treasury engine (single source of truth for path-dependent state)
+  liquidity_metrics.py    LaR (deterioration), ELS, breach probability, funding percentiles, survival
+  return_models.py        data preparation, Gaussian / Student t / bootstrap / EWMA / GARCH, matrix checks
+  model_validation.py     Kupiec, Christoffersen, rolling backtest, vol forecast scores, moments
+  treasury_analytics.py   adapter from the six-commodity book, scenarios, haircut and credit stress, Monte Carlo
+  hedge_frontier.py       stochastic multi-objective hedge frontier (grid search, Pareto, constraints)
+  case_study_2022.py      observed TTF 2022 prices through a hypothetical gas storage merchant
 ui/                      presentation layer
   theme.py                design tokens, STATUS colours, Plotly layout, CSS, currency context, formatters,
                           HOUSE_NAME and AUTHOR constants, bridge/regime label helpers
@@ -96,8 +110,13 @@ ui/                      presentation layer
   components.py           header, verdict, KPI rows, panels, editors, audit rows, briefing, author panel
   cache.py                st.cache_data wrappers and data-status label
   report.py               self-contained HTML credit committee report
+  treasury_views.py       Treasury, Credit, Case study 2022 tabs, Overview projection, stochastic frontier panel
+  treasury_charts.py      figures for those views (case study figures in EUR, never converted)
+docs/                    dashboard.png, METHODOLOGY.md (new models), IMPLEMENTATION_STATUS.md (upgrade log)
+.github/workflows/ci.yml static checks, financial benchmarks, full suite with coverage, server health check
+requirements-dev.txt     ruff and pytest-cov for CI
 data/sample_prices.csv   260 business days ending 2026-11-20, six tickers, generated with seed 42
-tests/                   216 tests (see section 10)
+tests/                   317 tests (see section 10)
 .streamlit/config.toml   native light theme (mirrors ui/theme.py), headless server, error detail level
 requirements.txt         bounded to tested major versions
 README.md                public brief; CLAUDE.md short rules; PROJECT_CONTEXT.md this file
@@ -349,7 +368,7 @@ covered before August 2022.
   LaR 95% at the chosen horizon, squeeze breakeven.
 - **Methodology and use case** expander (collapsed) under the verdict.
 - **Tabs** (exact labels, asserted in tests): Overview, Borrowing base, Inventory, Receivables, Stress sweep,
-  Scenario heatmap, Monte Carlo LaR, Hedging, Funding plan, Replays.
+  Scenario heatmap, Monte Carlo LaR, Treasury, Credit, Hedging, Funding plan, Replays, Case study 2022.
 
 | Tab | Content |
 | --- | --- |
@@ -363,6 +382,11 @@ covered before August 2022.
 | Hedging | Commodity selector; KPI row; hedge frontier chart (buffer in rally, crash and worst case; unprotected loss) |
 | Funding plan | Target selector (active / worst sweep point); KPI row; ranked remedial actions; early-warning triggers; single-commodity reverse stress table |
 | Replays | Selector: loaded price history or one of four real episodes; provenance note; KPI row; three-panel chart; daily table and CSV for loaded history |
+| Treasury | Settings expander; deterministic daily projection (KPIs, liquidity and facility chart, cash flow waterfall, haircut sensitivity, ledger with CSV); path Monte Carlo (KPIs with sampling intervals, fan, survival, funding and deterioration distributions, tail decomposition, JSON export); validation expander (off by default) |
+| Credit | LGD and insurance sliders; exposure, ECL and concentration; deterministic credit stress table; scheduled vs simulated credit Monte Carlo |
+| Case study 2022 | Button loads observed TTF data; assumption inputs (EUR); KPIs; variant table and CSV; price and margin chart; cash by variant; ledger CSV |
+
+The Overview also shows a "Daily treasury projection" panel and the Hedging tab a stochastic frontier panel.
 
 ### 7.2 Sidebar and session-state keys
 
@@ -404,6 +428,14 @@ edits in `margin_edited_df` / `basis_edited_df`). They are always rendered (insi
 edits survive switching model mode. Other advanced state: `compare_alt` (saved alternative ScenarioSpec JSON),
 `active_spec_json`, `terms_base` (facility terms from a restored configuration that have no widget),
 `config_error`, `config_message`. Every callback that bumps the nonce first calls `commit_pending_edits`.
+
+Treasury upgrade keys (defaults in `ui/treasury_views.TREASURY_DEFAULTS`, all reset by `reset_btn`):
+`tr_horizon` 30, `tr_paths` 500, `tr_method` gaussian, `tr_nu` 5, `tr_block` 5, `tr_lambda` 0.94, `tr_corr`
+unconditional, `tr_window` "250 days", `tr_seed` 31, `tr_conf` 0.95, `tr_credit` scheduled, `tr_wrongway` 0,
+`tr_dynamic` True, `tr_lender_pts` 0, `tr_margin_mode` fixed_per_contract, `tr_vol_mult` 1, `tr_min_cash_m` 0,
+`tr_rev_rate` 0, `tr_delay` 1, `tr_redet` 1, `tr_turnover` 0, `tr_basis_vol` 0, `tr_extra_line_m` 0,
+`tr_emergency_m` 0, `tr_validate` False, `cr_lgd` 0.6, `cr_insurance` 0, `hf_max_breach` 1.0, `cs_alt_line_m`
+150, `cs_cash_m` 25, `cs_hedge` 1.0, `cs_loaded` False (set by the case study button), `cs_variant`.
 
 Other session state: `editor_nonce` (incremented only by Reset, the presets and Apply configuration), `inventory_df`,
 `receivables_df` (canonical editor baselines), `inventory_edited_df`, `receivables_edited_df` (latest edits;
@@ -496,7 +528,8 @@ the house is illustrative.
 
 ## 10. Testing
 
-Run `.venv/bin/python -m pytest`. 216 tests, no warnings:
+Run `.venv/bin/python -m pytest`. 317 tests, no warnings (counts below are for the files listed; the architecture
+test is parametrized over every `core/*.py`):
 
 | File | Tests | Guards |
 | --- | ---: | --- |
@@ -511,6 +544,9 @@ Run `.venv/bin/python -m pytest`. 216 tests, no warnings:
 | test_default_book.py | 10 | current six-commodity ground truth (section 6) |
 | test_cache_helpers.py | 8 | cache wrappers equal direct engines, data status labels, live timeout |
 | test_scenario_analytics.py | 8 | vectorized engine equals exact engine, grid, Monte Carlo, replay |
+| test_treasury_engine.py | 30 | hand-calculated daily engine benchmarks: multi-day worked example, zero movement, delayed drawdown, unfunded shortfall, sweep, commitment fee, VM signs (long/short, up/down, zero), IM call and lagged release, no duplicate VM, vol-scaled IM, zero collateral, commitment cap, deficiency cure, haircut limits, redetermination, aging, cap solver vs legacy, sale and purchase collateral flows, invariants, invalid inputs |
+| test_credit_basis_units.py | 21 | horizon PD, insurance and recovery split, ECL, zero and certain default, default-rate calibration with correlation and wrong-way loading, transition matrix, delay without loss, insured claim timing, partial recovery, downgrade ineligibility, disputes, units, currency, roll cash, maturity mismatch, EWMA and OU checks, calendar |
+| test_simulation_and_frontier.py | 19 | seed reproducibility, Student t normalization and tails, correlation targets, synchronized bootstrap, matrix repair, GARCH recovery, data preparation, LaR / ELS / breach / path maximum on a constructed run, intervals, Kupiec and Christoffersen, backtest without look-ahead, moments, cross-check against the advanced ledger, default book day-3 breach, haircut sensitivity ordering, Monte Carlo reproducibility, Pareto and labels, case study on a test series, TTF fetch validation |
 | test_presentation.py | 6 | currency context, `localize_figure`, FX fallback, certificate borrower, HTML report in USD and EUR |
 
 No test touches the network (Yahoo calls are monkeypatched or faked). In `AppTest`, never call `.set_value()`
@@ -582,6 +618,9 @@ stress, sweep, tiers, grid, Monte Carlo samples, replay, certificate) and confir
 
 ---
 
+- **Treasury upgrade limits:** see `docs/METHODOLOGY.md` section 17 (simplified facility terms, illustrative
+  parameters, proxy margin, synthetic basis and curve, illustrative credit model, memory of large runs).
+
 ## 13. Remaining tasks and backlog
 
 Open items:
@@ -602,6 +641,16 @@ plus carry on physical inventory value, over a horizon in days (actual/360), is 
 the dilution reserve is deducted from eligible receivables before the advance rate and shown as its own
 bridge step. Example: 8% revolver rate, 30 days, lowers the +14% buffer by 0.89M to -2.68M. Also added that
 day: first-visit guide, README screenshot, shareable scenario links (`?s=`), advanced sweep/grid/frontier.
+
+Technical debt and next steps after the treasury upgrade (2026-11-23):
+- Consolidate `core/cashflow_engine.run_cashflow_ledger` into `core/treasury_engine.run_treasury` (they agree
+  where features overlap, tested in `test_new_engine_reproduces_existing_ledger_where_features_overlap`).
+- Legacy Monte Carlo, runway, funding plan and the HTML report still use the legacy engine; the report does not
+  yet include the Treasury, Credit or case study sections.
+- `run_treasury` allocates every ledger field before trimming to the summary set; allocate only the summary
+  fields in Monte Carlo runs to cut memory (about 150 MB transient at 2,000 paths x 90 days).
+- Observed futures curves and physical price series, if a licensed source becomes available, would replace the
+  synthetic curve and basis.
 
 Ideas offered but not yet chosen by the owner (good next candidates):
 - LinkedIn link in the author panel if the owner provides a URL.
@@ -689,3 +738,45 @@ six), receivables, facility terms, margin, basis, scenario extras, trigger rule,
 and simulation state, reporting currency. Market data is not included. Restore validates everything (size
 limit 1 MB, UTF-8, JSON, kind, version, Pydantic, UI tier checks) before changing any state; nothing in the
 file is executed.
+
+---
+
+## 15. Institutional upgrade: daily treasury engine (2026-11-23)
+
+Owner's brief: upgrade the financial mathematics (dynamic treasury, dynamic collateral, tail risk, basis and
+curve, counterparty credit, multi-objective hedging, a 2022 case study, validation, CI, documentation) without
+changing audited figures. Implemented as new instrument-agnostic modules (section 3) and three tabs; the
+legacy and advanced models are untouched and every pinned figure in section 6 is unchanged.
+
+Calculation order on each simulated day, state variables, equations, conventions (LaR as a deterioration,
+breach threshold, haircut versus advance rate), the worked example and limitations are in
+`docs/METHODOLOGY.md`. Key design decisions:
+- One engine (`run_treasury`) carries all path-dependent state; credit outcomes, market paths, haircut and IM
+  policies are inputs. Negative cash is allowed only as an unpaid obligation and is reported as a shortfall.
+- Cash reconciliation and the net-worth identity are computed every day and exposed as residuals.
+- The adapter keeps day-0 eligible inventory equal to the legacy figure (same haircut parameters).
+- The case study fetches observed `TTF=F` data on a button press (no network on normal reruns or in tests) and
+  never substitutes synthetic prices. Case study money is EUR and is not converted to the reporting currency.
+- Real company names in the illustrative receivables ledger receive only an illustrative rating bucket from the
+  investment-grade flag; the UI states this is not an assessment of the company.
+
+Reference figures (bundled sample, defaults unless stated; Treasury settings as listed in section 7.2):
+- Active scenario +14% over 5 days, 20 or 30 day horizon: first unfunded day 3 (2026-11-25, same as the
+  advanced ledger), minimum available liquidity -2.61M, peak unfunded requirement 4.64M; borrowing base day 0
+  144,942,532 (equal to legacy).
+- Haircut sensitivity at +14%: static, dynamic, +5 points and weekly redetermination -2.61M (base above the
+  commitment, so haircuts do not bind); +15 points -8.79M; +15 capped at +2 per redetermination -8.08M.
+- Monte Carlo, Gaussian, 500 paths, seed 31, 30 days: P(breach) 35.2% (sampling interval 31.1% to 39.5%),
+  LaR 95% 6.29M, ELS 7.69M, funding p95 1.71M. Breaches here come mostly from the one-day drawdown delay after
+  surplus cash is swept to the revolver.
+- Stochastic frontier (all commodities, 20 days, Student t, 300 paths): unhedged and fully hedged both breach
+  often (falls versus rallies); funding need is lowest around 30% to 50% hedged, economic downside lowest at 100%.
+- Case study with observed 2022 TTF data (as fetched 2026-11-23; vendor revisions can move these): peak TTF
+  339 EUR/MWh (26 August); static financing economic P&L -3.18M EUR, peak cumulative VM paid 258.78M EUR, peak
+  funding need 127.34M EUR; combined adverse 147.33M EUR; combined with the EUR 150M alternative line 50.16M EUR
+  (two-day delay). Volatility-scaled IM rises from about 12M to 63M EUR.
+
+Performance (local, Python 3.12): app cold run 2.40 s before the upgrade, 3.19 s after; warm rerun 0.69 s
+before, 0.94 s after. Deterministic 30-day run 0.02 s; Monte Carlo 500 x 30 days 0.04 s, 2,000 x 90 days 0.38 s;
+GARCH calibration (six assets) 0.36 s; frontier 11 ratios x 300 paths 0.44 s.
+

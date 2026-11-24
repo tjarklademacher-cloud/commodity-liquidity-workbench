@@ -158,10 +158,10 @@ def test_app_initial_load_clean(app):
     assert len(app.warning) == 0
     assert any(e.label == "Methodology and use case" for e in app.expander)
     assert [t.label for t in app.tabs] == ["Overview", "Borrowing base", "Inventory", "Receivables", "Stress sweep",
-                                           "Scenario heatmap", "Monte Carlo LaR", "Hedging", "Funding plan",
-                                           "Replays"]
+                                           "Scenario heatmap", "Monte Carlo LaR", "Treasury", "Credit", "Hedging",
+                                           "Funding plan", "Replays", "Case study 2022"]
     assert "Bundled sample data" in " ".join(m.value for m in app.markdown)
-    assert len(app.tabs) == 10
+    assert len(app.tabs) == 13
     assert 'class="verdict"' in " ".join(m.value for m in app.markdown)
 
 

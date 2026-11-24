@@ -64,6 +64,15 @@ from ui.advanced_views import (
     reset_advanced_state,
     save_active_as_alternative,
 )
+from ui.treasury_views import (
+    init_treasury_state,
+    render_case_study_tab,
+    render_credit_tab,
+    render_mo_frontier,
+    render_overview_projection,
+    render_treasury_tab,
+    reset_treasury_state,
+)
 from ui.cache import (
     LIVE_TTL_SECONDS,
     cached_backtest,
@@ -200,6 +209,7 @@ def init_session_state() -> None:
         if key not in ss:
             ss[key] = value
     init_advanced_state(ss)
+    init_treasury_state()
 
 
 def reset_to_defaults() -> None:
@@ -209,6 +219,7 @@ def reset_to_defaults() -> None:
     ss["inventory_df"] = default_inventory_df()
     ss["receivables_df"] = default_receivables_df()
     reset_advanced_state(ss)
+    reset_treasury_state()
     ss.editor_nonce += 1
 
 
@@ -458,10 +469,10 @@ def main() -> None:
     ss = st.session_state
 
     header = st.container()
-    (tab_overview, tab_cert, tab_inv, tab_ar, tab_stress, tab_heat, tab_mc, tab_hedge, tab_plan,
-     tab_replay) = st.tabs(
+    (tab_overview, tab_cert, tab_inv, tab_ar, tab_stress, tab_heat, tab_mc, tab_treasury, tab_credit, tab_hedge,
+     tab_plan, tab_replay, tab_case) = st.tabs(
         ["Overview", "Borrowing base", "Inventory", "Receivables", "Stress sweep", "Scenario heatmap",
-         "Monte Carlo LaR", "Hedging", "Funding plan", "Replays"]
+         "Monte Carlo LaR", "Treasury", "Credit", "Hedging", "Funding plan", "Replays", "Case study 2022"]
     )
     nonce = ss.editor_nonce
 
@@ -758,6 +769,8 @@ def main() -> None:
                 st.dataframe(mix, width="stretch", hide_index=True,
                              column_config={"Eligible": _money_column("Eligible"),
                                             "Share": st.column_config.NumberColumn("Share", format="%.1f%%")})
+        render_overview_projection(positions, receivables, market.snapshot, terms, margin_settings,
+                                   market.prices_df, inputs, stress.shocks_map)
         with panel("comparison"):
             section_head("Scenario comparison",
                          "Baseline, active scenario and a saved alternative, computed with the same engine and "
@@ -1166,6 +1179,19 @@ def main() -> None:
                     ])
                     st.caption("A fully hedged book can be flat economically and still need cash today: the hedge "
                                "loss is paid at once while the offsetting physical gain waits for the sale.")
+
+    with tab_hedge:
+        render_mo_frontier(inputs, margin_settings, market.prices_df, scope)
+
+    synthetic_feed = not market.source_label.startswith(("Live", "Custom")) or market.used_fallback
+    with tab_treasury:
+        render_treasury_tab(inputs, positions, receivables, market.snapshot, terms, margin_settings,
+                            market.prices_df, stress.shocks_map, scenario, synthetic_feed)
+    with tab_credit:
+        render_credit_tab(inputs, positions, receivables, market.snapshot, terms, margin_settings, market.prices_df,
+                          stress.shocks_map)
+    with tab_case:
+        render_case_study_tab()
 
     with tab_plan:
         st.radio("Plan against", ["active", "worst"], key="cfp_target", horizontal=True,
